@@ -1,0 +1,23 @@
+# llamagraph — requirements
+# Python >= 3.12 required (uses type-hint syntax from 3.10+: X | Y, list[X])
+#
+# All packages below are available on PyPI.
+# Install with:  pip install -r requirements.txt
+#
+# Tkinter is part of the Python standard library but requires the OS package:
+#   Windows  : bundled with the official Python installer (python.org)
+#   Ubuntu   : sudo apt install python3-tk
+#   Fedora   : sudo dnf install python3-tkinter
+#   Conda    : conda install tk   (usually already present)
+
+# ── Numerical / data ─────────────────────────────────────────────────────────
+numpy>=1.26.0
+
+# ── Plotting ─────────────────────────────────────────────────────────────────
+matplotlib>=3.8.0          # FigureCanvasTkAgg, mpl_toolkits.mplot3d, mtri
+
+# ── Standard library (no install needed) ─────────────────────────────────────
+# csv, pathlib, collections, math, argparse, colorsys, tkinter
+
+# ── Testing ────────────────────────────────────────────────────────────────────
+pytest>=8.0.0
