@@ -379,6 +379,9 @@ class BenchmarkModel:
                 try:
                     pt = (float(x_val), float(y_val), float(z_val), e_val)
                 except (TypeError, ValueError):
+                    print(f"[benchmark_model] Skipping row: cannot convert "
+                          f"x='{x_val}' (type={type(x_val).__name__}), "
+                          f"y='{y_val}' (type={type(y_val).__name__}) to float")
                     continue
 
                 if row['type'] == 'pp' and show_pp:
