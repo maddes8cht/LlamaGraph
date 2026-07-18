@@ -136,8 +136,9 @@ class PlotView(tk.Frame):
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _destroy_canvas(self) -> None:
-        if self._toolbar and self._toolbar.winfo_exists():
-            self._toolbar.destroy()
+        if self._toolbar:
+            if self._toolbar.winfo_exists():
+                self._toolbar.destroy()
             self._toolbar = None
         if self._canvas:
             widget = self._canvas.get_tk_widget()
