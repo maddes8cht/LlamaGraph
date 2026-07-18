@@ -251,10 +251,7 @@ class PlotterPresenter:
     def _save_camera(self, ax) -> dict:
         state: dict = {'elev': ax.elev, 'azim': ax.azim}
         if hasattr(ax, 'roll'):
-            try:
-                state['roll'] = ax.roll
-            except Exception:
-                pass
+            state['roll'] = ax.roll
         try:
             state['xlim'] = ax.get_xlim3d()
             state['ylim'] = ax.get_ylim3d()

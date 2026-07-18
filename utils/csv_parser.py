@@ -68,11 +68,16 @@ def parse_bench_csv(csv_path: Path) -> Optional[dict]:
             n_prompt = int(row.get('n_prompt', -1))
             n_gen = int(row.get('n_gen', -1))
         except (ValueError, TypeError):
+            print(f"[csv_parser] Skipping row: invalid n_prompt/n_gen "
+                  f"(n_prompt={row.get('n_prompt')!r}, "
+                  f"n_gen={row.get('n_gen')!r})")
             continue
 
         is_pp = (n_prompt > 0 and n_gen == 0)
         is_tg = (n_prompt == 0 and n_gen > 0)
         if not (is_pp or is_tg):
+            print(f"[csv_parser] Skipping row: neither PP nor TG "
+                  f"(n_prompt={n_prompt}, n_gen={n_gen})")
             continue
 
         entry: dict = {'type': 'pp' if is_pp else 'tg'}
@@ -95,6 +100,9 @@ def parse_bench_csv(csv_path: Path) -> Optional[dict]:
             entry['ts_val'] = float(row['avg_ts']) if row.get('avg_ts', '').strip() else None
             entry['ts_err'] = float(row.get('stddev_ts', 0) or 0)
         except (ValueError, KeyError):
+            print(f"[csv_parser] Invalid avg_ts/stddev_ts in row "
+                  f"(avg_ts={row.get('avg_ts')!r}, "
+                  f"stddev_ts={row.get('stddev_ts')!r})")
             entry['ts_val'] = None
             entry['ts_err'] = 0.0
 
@@ -102,6 +110,9 @@ def parse_bench_csv(csv_path: Path) -> Optional[dict]:
             entry['ns_val'] = float(row['avg_ns']) if row.get('avg_ns', '').strip() else None
             entry['ns_err'] = float(row.get('stddev_ns', 0) or 0)
         except (ValueError, KeyError):
+            print(f"[csv_parser] Invalid avg_ns/stddev_ns in row "
+                  f"(avg_ns={row.get('avg_ns')!r}, "
+                  f"stddev_ns={row.get('stddev_ns')!r})")
             entry['ns_val'] = None
             entry['ns_err'] = 0.0
 
