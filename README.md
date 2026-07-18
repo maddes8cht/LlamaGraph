@@ -37,7 +37,7 @@ A more comprehensive, genuine guide will follow soon.
 **Typical file view in 2D**  
 
 ![Multi-file 2D comparison](./media/this-is-expected.webp)
-This one is what we expect when reaching the vram limit: Token gen and prompt processing remain at a plateau since more layers cannot be offloaded to GPU. With your current hardware, obviously there is nothing you can do to improve performanece, here is your limit.
+This one is what we expect when reaching the vram limit: Token gen and prompt processing remain at a plateau since more layers cannot be offloaded to GPU. With your current hardware, obviously there is nothing you can do to improve performance, here is your limit.
 
 **Unexpected sudden performance drop of prompt processing**  
 Even when TG looks reasonable, PP can collapse at certain layer counts. Visualizing both makes these problems obvious.
@@ -53,7 +53,7 @@ X = n-gpu-layers, Y = n-batch, filtered by ubatch, showing normalized PP & TG.
 
 ![3D Parameter Space](./media/drop-is-real-accross-all-batch-values.webp)
 The 3D view shows that this decrease at `ngl 18` is in fact real for all values of `batch`.  
-Something really strange is going on here, and it's not a limitation of corrent hardware. This is just an obscure and unfortunate combination of parameters that you want to avoid on your hardware for this model.
+Something really strange is going on here, and it's not a limitation of current hardware. This is just an obscure and unfortunate combination of parameters that you want to avoid on your hardware for this model.
 
 ### Current status
 
