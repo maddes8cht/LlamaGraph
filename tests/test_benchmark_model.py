@@ -519,8 +519,8 @@ def test_3d_points_with_normalization(tmp_path):
         assert 0 <= pt[2] <= 1  # z (index 2) should be in [0, 1]
 
 
-def test_3d_points_invalid_dimension(tmp_path):
-    """Test 3D points with dimension that doesn't resolve (returns None)."""
+def test_3d_points_string_dimension_encoded(tmp_path):
+    """Test 3D points with string-valued dimension (categorical encoding)."""
     model = BenchmarkModel()
     
     csv_file = tmp_path / "test.csv"
@@ -530,11 +530,13 @@ def test_3d_points_invalid_dimension(tmp_path):
     
     model.load_files([Path(csv_file)])
     
-    # Use string-valued dimension (can't be converted to float)
     points_pp, points_tg = model.get_3d_points("params", "params", show_ts=True, show_pp=True, show_tg=False, normalize=False, scale_pct=False)
     
-    # "70B" can't be float-converted → raises TypeError/ValueError at line 381 → skipped
-    assert len(points_pp) == 0
+    # String "70B" is encoded to categorical code 0.0 → row is kept
+    assert len(points_pp) == 1
+    assert points_pp[0][0] == 0.0
+    assert points_pp[0][1] == 0.0
+    assert model.get_dim_labels("params") == ["70B"]
 
 
 def test_3d_points_none_dimension(tmp_path):
@@ -711,3 +713,99 @@ def test_get_dim_values_empty(tmp_path):
     
     vals = model.get_dim_values("nonexistent")
     assert vals == []
+
+
+# ── get_3d_points with string params ──────────────────────────────────────
+
+
+def test_get_3d_points_string_params_returns_categorical(tmp_path):
+    """String-valued dimension params are encoded to categorical codes."""
+    model = BenchmarkModel()
+
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("""n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns,gpu_name,params
+1024,0,100.5,5.2,50250,2600,RTX 4090,70B
+0,256,85.3,4.1,42650,2050,RTX 4090,70B
+""")
+
+    model.load_files([Path(csv_file)])
+
+    pp, tg = model.get_3d_points(
+        x_dim="gpu_name", y_dim="params",
+        show_ts=True, show_pp=True, show_tg=True,
+        normalize=False, scale_pct=False,
+    )
+
+    assert isinstance(pp, list)
+    assert isinstance(tg, list)
+    assert len(pp) == 1  # one PP row
+    assert len(tg) == 1  # one TG row
+    # Both points get code 0 for gpu_name="RTX 4090" and code 0 for params="70B"
+    x_vals = {p[0] for p in pp + tg}
+    y_vals = {p[1] for p in pp + tg}
+    assert x_vals == {0.0}
+    assert y_vals == {0.0}
+
+    # Verify categorical labels are stored
+    assert model.get_dim_labels("gpu_name") == ["RTX 4090"]
+    assert model.get_dim_labels("params") == ["70B"]
+
+
+def test_get_3d_points_mixed_params_encodes_string(tmp_path):
+    """String params in one dimension get encoded; numeric dim stays numeric."""
+    model = BenchmarkModel()
+
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("""n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns,gpu_name,n_gpu_layers
+1024,0,100.5,5.2,50250,2600,RTX 4090,20
+0,256,85.3,4.1,42650,2050,RTX 4090,99
+""")
+
+    model.load_files([Path(csv_file)])
+
+    pp, tg = model.get_3d_points(
+        x_dim="gpu_name", y_dim="n_gpu_layers",
+        show_ts=True, show_pp=True, show_tg=True,
+        normalize=False, scale_pct=False,
+    )
+
+    assert isinstance(pp, list)
+    assert isinstance(tg, list)
+    assert len(pp) == 1
+    assert len(tg) == 1
+    # x_dim is string (encoded to 0.0), y_dim is numeric (20.0 / 99.0)
+    for pt in pp:
+        assert pt[0] == 0.0  # encoded from "RTX 4090"
+        assert pt[1] == 20.0  # n_gpu_layers as float
+    for pt in tg:
+        assert pt[0] == 0.0
+        assert pt[1] == 99.0
+
+    assert model.get_dim_labels("gpu_name") == ["RTX 4090"]
+    assert model.get_dim_labels("n_gpu_layers") is None  # numeric
+
+
+def test_get_3d_points_numeric_params_works(tmp_path):
+    """Fully numeric dimensions produce valid points without encoding."""
+    model = BenchmarkModel()
+
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("""n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns,n_gpu_layers
+1024,0,100.5,5.2,50250,2600,20
+0,256,85.3,4.1,42650,2050,99
+""")
+
+    model.load_files([Path(csv_file)])
+
+    pp, tg = model.get_3d_points(
+        x_dim="n_gpu_layers", y_dim="n_gpu_layers",
+        show_ts=True, show_pp=True, show_tg=True,
+        normalize=False, scale_pct=False,
+    )
+
+    assert isinstance(pp, list)
+    assert isinstance(tg, list)
+    assert len(pp) == 1
+    assert len(tg) == 1
+
+    assert model.get_dim_labels("n_gpu_layers") is None  # numeric, no mapping

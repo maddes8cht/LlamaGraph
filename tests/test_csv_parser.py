@@ -199,3 +199,56 @@ def test_parse_bench_csv_invalid_ns_value(tmp_path):
     assert result["raw_rows"][0]["ns_val"] is None
     # Row with valid avg_ns should have ns_val set
     assert result["raw_rows"][1]["ns_val"] == 42650.0
+
+
+def test_parse_bench_csv_malformed_row_warning_print(capsys, tmp_path):
+    """Malformed rows with invalid n_prompt/n_gen print warning to stdout."""
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("""n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns
+invalid,0,100.5,5.2,50250,2600
+1024,invalid,85.3,4.1,42650,2050
+1024,0,100.5,5.2,50250,2600
+""")
+
+    result = parse_bench_csv(Path(csv_file))
+
+    assert result is not None
+    assert len(result["raw_rows"]) == 1  # only valid row
+    captured = capsys.readouterr()
+    assert captured.out
+    assert "csv_parser" in captured.out
+    assert "Skipping" in captured.out
+
+
+def test_parse_bench_csv_non_pp_tg_warning_print(capsys, tmp_path):
+    """Rows that are neither PP nor TG print warning to stdout."""
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("""n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns
+0,0,100.5,5.2,50250,2600
+1024,0,85.3,4.1,42650,2050
+""")
+
+    result = parse_bench_csv(Path(csv_file))
+
+    assert result is not None
+    assert len(result["raw_rows"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out
+    assert "csv_parser" in captured.out
+    assert "Skipping" in captured.out
+
+
+def test_parse_bench_csv_invalid_ts_warning_print(capsys, tmp_path):
+    """Invalid avg_ts/stddev_ts values print warning to stdout."""
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("""n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns
+1024,0,invalid,5.2,50250,2600
+""")
+
+    result = parse_bench_csv(Path(csv_file))
+
+    assert result is not None
+    captured = capsys.readouterr()
+    assert captured.out
+    assert "csv_parser" in captured.out
+    assert "Invalid" in captured.out
