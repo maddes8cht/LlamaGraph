@@ -909,3 +909,40 @@ def test_save_camera_without_roll(tmp_path):
     assert state['elev'] == 30.0
     assert state['azim'] == -45.0
     assert 'roll' not in state
+
+
+def test_save_camera_with_roll(tmp_path):
+    """Test _save_camera when ax has a roll attribute."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+
+    mock_ax = MagicMock(spec=['elev', 'azim', 'roll',
+                              'get_xlim3d', 'get_ylim3d', 'get_zlim3d'])
+    mock_ax.elev = 30.0
+    mock_ax.azim = -45.0
+    mock_ax.roll = 15.0
+    mock_ax.get_xlim3d.return_value = (0, 10)
+    mock_ax.get_ylim3d.return_value = (0, 20)
+    mock_ax.get_zlim3d.return_value = (0, 30)
+
+    state = presenter._save_camera(mock_ax)
+    assert state['elev'] == 30.0
+    assert state['azim'] == -45.0
+    assert state['roll'] == 15.0
+    assert state['xlim'] == (0, 10)
+
+
+def test_save_camera_exception_path(tmp_path):
+    """Test _save_camera when get_xlim3d raises (covers dead except block)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+
+    mock_ax = MagicMock()
+    mock_ax.elev = 30.0
+    mock_ax.azim = -45.0
+    mock_ax.get_xlim3d.side_effect = RuntimeError("No 3D support")
+
+    state = presenter._save_camera(mock_ax)
+    assert state['elev'] == 30.0
+    assert state['azim'] == -45.0
+    assert 'xlim' not in state  # exception caught and ignored

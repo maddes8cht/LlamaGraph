@@ -52,6 +52,10 @@ class BenchmarkModel:
         # An empty set means "show all values for this dim"
         self._active_filters: dict[str, set] = {}
 
+        # Categorical mappings for string-valued dimensions used in 3D plots
+        # {dim_name: {string_value: integer_code}}
+        self._cat_mappings: dict[str, dict[str, int]] = {}
+
         # Registered observers (Presenter callbacks)
         self._observers: list[Callable[[], None]] = []
 
@@ -353,10 +357,14 @@ class BenchmarkModel:
 
         Returns (points_pp, points_tg) where each element is a 4-tuple
         (x_val, y_val, z_val, z_err).
+
+        String-valued dimensions are encoded to sequential integers;
+        call get_dim_labels() to retrieve the label mapping.
         """
         z_key = 'ts_val' if show_ts else 'ns_val'
         e_key  = 'ts_err' if show_ts else 'ns_err'
 
+        self._cat_mappings.clear()
         points_pp: list[tuple] = []
         points_tg: list[tuple] = []
 
@@ -377,12 +385,15 @@ class BenchmarkModel:
                     continue
 
                 try:
-                    pt = (float(x_val), float(y_val), float(z_val), e_val)
+                    fx = float(x_val)
                 except (TypeError, ValueError):
-                    print(f"[benchmark_model] Skipping row: cannot convert "
-                          f"x='{x_val}' (type={type(x_val).__name__}), "
-                          f"y='{y_val}' (type={type(y_val).__name__}) to float")
-                    continue
+                    fx = self._cat_encode(x_val, x_dim)
+                try:
+                    fy = float(y_val)
+                except (TypeError, ValueError):
+                    fy = self._cat_encode(y_val, y_dim)
+
+                pt = (fx, fy, float(z_val), e_val)
 
                 if row['type'] == 'pp' and show_pp:
                     points_pp.append(pt)
@@ -395,6 +406,23 @@ class BenchmarkModel:
             points_tg = _normalize_3d_points(points_tg, scale_pct)
 
         return points_pp, points_tg
+
+    def _cat_encode(self, val, dim: str) -> float:
+        """Map a string value to a sequential float code for the given dimension."""
+        if dim not in self._cat_mappings:
+            self._cat_mappings[dim] = {}
+        mapping = self._cat_mappings[dim]
+        if val not in mapping:
+            mapping[val] = len(mapping)
+        return float(mapping[val])
+
+    def get_dim_labels(self, dim: str) -> list[str] | None:
+        """Return categorical labels for *dim* ordered by code, or None if not categorical."""
+        mapping = self._cat_mappings.get(dim)
+        if not mapping:
+            return None
+        sorted_pairs = sorted(mapping.items(), key=lambda kv: kv[1])
+        return [p[0] for p in sorted_pairs]
 
     # ── Utility ───────────────────────────────────────────────────────────────
 

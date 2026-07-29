@@ -94,3 +94,161 @@ class TestUpdateAxisChoices:
         mw.update_axis_choices(["only"])
         assert mw.axis_x == "only"
         assert mw.axis_y == ""
+
+
+# ── Callback stubs ──────────────────────────────────────────────────────
+
+
+class TestCallbackStubs:
+    """Tests for MainWindow callback stubs (_on_render, _on_toggle_3d)."""
+
+    def test_on_render_calls_callback(self, tk_root):
+        """_on_render invokes _render_cb when set."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        cb = MagicMock()
+        mw._render_cb = cb
+        mw._on_render()
+        cb.assert_called_once()
+
+    def test_on_render_no_callback(self, tk_root):
+        """_on_render does nothing when _render_cb is None."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        mw._render_cb = None
+        mw._on_render()  # should not raise
+
+    def test_on_toggle_3d_calls_callback(self, tk_root):
+        """_on_toggle_3d invokes _toggle_3d_cb when set."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        cb = MagicMock()
+        mw._toggle_3d_cb = cb
+        mw._on_toggle_3d()
+        cb.assert_called_once()
+
+    def test_on_toggle_3d_no_callback(self, tk_root):
+        """_on_toggle_3d does nothing when _toggle_3d_cb is None."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        mw._toggle_3d_cb = None
+        mw._on_toggle_3d()  # should not raise
+
+
+# ── Callback setters ────────────────────────────────────────────────────
+
+
+class TestCallbackSetters:
+    """Tests for MainWindow callback setter methods."""
+
+    def test_set_render_callback(self, tk_root):
+        """set_render_callback stores the callback."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        cb = MagicMock()
+        mw.set_render_callback(cb)
+        assert mw._render_cb == cb
+
+    def test_set_toggle_3d_callback(self, tk_root):
+        """set_toggle_3d_callback stores the callback."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        cb = MagicMock()
+        mw.set_toggle_3d_callback(cb)
+        assert mw._toggle_3d_cb == cb
+
+    def test_set_toggle_metric_callback(self, tk_root):
+        """set_toggle_metric_callback configures the toggle button."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        cb = MagicMock()
+        mw.set_toggle_metric_callback(cb)
+        mw._toggle_btn.invoke()
+        cb.assert_called_once()
+
+
+# ── UI state methods ────────────────────────────────────────────────────
+
+
+class TestUISetters:
+    """Tests for set_unify_state and set_metric_button_text."""
+
+    def test_set_unify_state_enabled(self, tk_root):
+        """set_unify_state(True) → unify checkbox state=NORMAL."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        mw.set_unify_state(True)
+        assert str(mw._unify_chk.cget("state")) == "normal"
+
+    def test_set_unify_state_disabled(self, tk_root):
+        """set_unify_state(False) → unify checkbox state=DISABLED."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        mw.set_unify_state(False)
+        assert str(mw._unify_chk.cget("state")) == "disabled"
+
+    def test_set_metric_button_text(self, tk_root):
+        """set_metric_button_text updates toggle button text."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        mw.set_metric_button_text("Switch: ns")
+        assert mw._toggle_btn.cget("text") == "Switch: ns"
+
+
+# ── Key bindings ────────────────────────────────────────────────────────
+
+
+class TestKeyBindings:
+    """Tests for MainWindow.set_key_bindings()."""
+
+    def test_registers_three_bindings(self, tk_root):
+        """set_key_bindings registers exactly 3 key bindings on root."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        toggle = MagicMock()
+        refresh = MagicMock()
+        quit_app = MagicMock()
+        mw.set_key_bindings(toggle, refresh, quit_app)
+        bindings = mw._root.bind()
+        assert '<Control-Key-t>' in bindings
+        assert '<Control-Key-r>' in bindings
+        assert '<Key-Escape>' in bindings
+
+    def test_control_t_triggers_toggle(self, tk_root):
+        """Ctrl+T triggers toggle_metric via callback."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        toggle = MagicMock()
+        refresh = MagicMock()
+        quit_app = MagicMock()
+        mw.set_key_bindings(toggle, refresh, quit_app)
+        mw._root.update()
+        mw._root.event_generate('<Control-t>', when='tail')
+        mw._root.update()
+        toggle.assert_called_once()
+
+    def test_control_r_triggers_refresh(self, tk_root):
+        """Ctrl+R triggers refresh via callback."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        toggle = MagicMock()
+        refresh = MagicMock()
+        quit_app = MagicMock()
+        mw.set_key_bindings(toggle, refresh, quit_app)
+        mw._root.update()
+        mw._root.event_generate('<Control-r>', when='tail')
+        mw._root.update()
+        refresh.assert_called_once()
+
+    def test_escape_triggers_quit(self, tk_root):
+        """Escape triggers quit_app via callback."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        toggle = MagicMock()
+        refresh = MagicMock()
+        quit_app = MagicMock()
+        mw.set_key_bindings(toggle, refresh, quit_app)
+        mw._root.update()
+        mw._root.event_generate('<Escape>', when='tail')
+        mw._root.update()
+        quit_app.assert_called_once()

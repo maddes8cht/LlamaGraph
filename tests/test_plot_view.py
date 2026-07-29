@@ -799,3 +799,101 @@ class TestPlotView:
         pv = self._make_pv()
         pv.redraw_idle()  # should not raise
         self._cleanup_pv()
+
+    def test_set_home_callback(self):
+        """set_home_callback stores the callback."""
+        pv = self._make_pv()
+        cb = MagicMock()
+        pv.set_home_callback(cb)
+        assert pv._home_cb == cb
+        self._cleanup_pv()
+
+
+# ── Surface fallback (bug-hunting) ──────────────────────────────────────
+
+
+class TestRender3DFallback:
+    """Tests for render_3d surface fallback when Triangulation fails."""
+
+    def test_fallback_uses_plot_trisurf_on_exception(self):
+        """When _draw_trisurf raises, fallback calls ax.plot_trisurf directly."""
+        with patch('view.plot_view._draw_trisurf',
+                   side_effect=RuntimeError("Triangulation failed")):
+            pts = [(1.0, 2.0, 100.0, 5.0),
+                   (2.0, 3.0, 110.0, 5.0),
+                   (1.0, 3.0, 95.0, 5.0)]
+            fig, ax = render_3d(
+                points_pp=pts, points_tg=[],
+                x_param="x", y_param="y",
+                pp_color="#ff0000", tg_color="#00ff00",
+                show_surface=True,
+            )
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
+        assert len(surf) >= 1
+
+    def test_fallback_with_subdiv_level(self):
+        """Fallback also works when subdiv_level > 0 raises."""
+        with patch('view.plot_view._draw_trisurf',
+                   side_effect=RuntimeError("Refinement failed")):
+            pts = [(1.0, 2.0, 100.0, 5.0),
+                   (2.0, 3.0, 110.0, 5.0),
+                   (1.0, 3.0, 95.0, 5.0)]
+            fig, ax = render_3d(
+                points_pp=pts, points_tg=[],
+                x_param="x", y_param="y",
+                pp_color="#ff0000", tg_color="#00ff00",
+                show_surface=True,
+                subdiv_level=1,
+            )
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
+        assert len(surf) >= 1
+
+    def test_no_fallback_needed_on_valid_data(self):
+        """Valid triangulation data does not trigger fallback."""
+        pts = [(1.0, 2.0, 100.0, 5.0),
+               (2.0, 3.0, 110.0, 5.0),
+               (1.0, 3.0, 95.0, 5.0)]
+        fig, ax = render_3d(
+            points_pp=pts, points_tg=[],
+            x_param="x", y_param="y",
+            pp_color="#ff0000", tg_color="#00ff00",
+            show_surface=True,
+        )
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
+        assert len(surf) >= 1
+
+    def test_refined_path_subdiv_1(self):
+        """subdiv_level=1 via render_3d produces surface."""
+        pts = [(1.0, 2.0, 100.0, 5.0),
+               (2.0, 3.0, 110.0, 5.0),
+               (1.0, 3.0, 95.0, 5.0),
+               (3.0, 1.0, 105.0, 5.0)]
+        fig, ax = render_3d(
+            points_pp=pts, points_tg=[],
+            x_param="x", y_param="y",
+            pp_color="#ff0000", tg_color="#00ff00",
+            show_surface=True,
+            subdiv_level=1,
+        )
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
+        assert len(surf) >= 1
+
+    def test_no_surface_no_fallback(self):
+        """show_surface=False → no surface attempt, no fallback needed."""
+        pts = [(1.0, 2.0, 100.0, 5.0),
+               (2.0, 3.0, 110.0, 5.0),
+               (1.0, 3.0, 95.0, 5.0)]
+        fig, ax = render_3d(
+            points_pp=pts, points_tg=[],
+            x_param="x", y_param="y",
+            pp_color="#ff0000", tg_color="#00ff00",
+            show_surface=False,
+        )
+        # Scatter collections but no Poly3DCollection (no surface)
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
+        assert len(surf) == 0

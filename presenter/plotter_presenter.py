@@ -406,6 +406,16 @@ class PlotterPresenter:
         self._current_3d_ax = ax
         self._win.plot_view.render(fig, ax3d=ax)
 
+        # Apply categorical tick labels if dimensions are string-valued
+        x_labels = self._model.get_dim_labels(x_param)
+        if x_labels is not None:
+            ax.set_xticks(range(len(x_labels)))
+            ax.set_xticklabels(x_labels)
+        y_labels = self._model.get_dim_labels(y_param)
+        if y_labels is not None:
+            ax.set_yticks(range(len(y_labels)))
+            ax.set_yticklabels(y_labels)
+
         # Record home camera at first render for this axis combo
         if self._home_cam_3d is None:
             self._home_cam_3d = self._save_camera(ax)
