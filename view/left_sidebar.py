@@ -41,6 +41,7 @@ class LeftSidebar(tk.Frame):
       set_series_toggle_callback(cb)      – cb()  (any toggle changed)
       set_select_all_callback(cb)         – cb()
       set_deselect_all_callback(cb)       – cb()
+      set_md_toggle_callback(cb)          – cb()  (.md visibility toggled)
       set_choose_directory_callback(cb)   – cb(chosen_path: Path)
     """
 
@@ -61,7 +62,11 @@ class LeftSidebar(tk.Frame):
         self._series_toggle_cb: Optional[Callable] = None
         self._select_all_cb: Optional[Callable] = None
         self._deselect_all_cb: Optional[Callable] = None
+        self._md_toggle_cb: Optional[Callable] = None
         self._choose_directory_cb: Optional[Callable[[Path], None]] = None
+
+        # Whether the .md button is currently packed (packed in _build_ui)
+        self._md_visible: bool = True
 
         self._build_ui()
 
@@ -91,7 +96,7 @@ class LeftSidebar(tk.Frame):
         )
         self._dir_label.pack(fill=tk.X, padx=6, pady=(0, 4))
 
-        # Select All / Deselect All
+        # Select All / Deselect All / .md visibility toggle
         btn_row = tk.Frame(self, bg=COLORS['bg'])
         btn_row.pack(fill=tk.X, padx=5)
         tk.Button(btn_row, text="Select All",
@@ -104,6 +109,12 @@ class LeftSidebar(tk.Frame):
                   bg='#444', fg='white', relief=tk.FLAT,
                   cursor='hand2', font=('Segoe UI', 8)
                   ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        self._md_btn = tk.Button(btn_row, text=".md",
+                  command=self._on_md_toggle,
+                  bg=COLORS['accent'], fg='white', relief=tk.FLAT,
+                  cursor='hand2', font=('Segoe UI', 8)
+                  )
+        self._md_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
         # File Listbox with scrollbar
         list_frame = tk.Frame(self, bg=COLORS['bg'])
@@ -187,6 +198,19 @@ class LeftSidebar(tk.Frame):
         self._file_list.selection_clear(0, tk.END)
         self._on_listbox_select(None)
 
+    def set_md_toggle_visible(self, visible: bool) -> None:
+        """Show or hide the `.md` toggle button (hidden with `--no-md`)."""
+        if visible and not self._md_visible:
+            self._md_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+            self._md_visible = True
+        elif not visible and self._md_visible:
+            self._md_btn.pack_forget()
+            self._md_visible = False
+
+    def set_md_toggle_state(self, active: bool) -> None:
+        """Reflect whether `.md` files are currently listed (accent = on)."""
+        self._md_btn.config(bg=COLORS['accent'] if active else '#444')
+
     def update_series_toggles(self, dataset_paths: list[Path]) -> None:
         """
         Rebuild the per-series PP/TG checkboxes.
@@ -255,6 +279,9 @@ class LeftSidebar(tk.Frame):
     def set_deselect_all_callback(self, cb: Callable[[], None]) -> None:
         self._deselect_all_cb = cb
 
+    def set_md_toggle_callback(self, cb: Callable[[], None]) -> None:
+        self._md_toggle_cb = cb
+
     def set_choose_directory_callback(self, cb) -> None:
         """Register callback called with the chosen Path when user picks a dir."""
         self._choose_directory_cb = cb
@@ -289,8 +316,12 @@ class LeftSidebar(tk.Frame):
         else:
             self.deselect_all()
 
+    def _on_md_toggle(self) -> None:
+        if self._md_toggle_cb:
+            self._md_toggle_cb()
+
     def _on_choose_directory(self) -> None:
         """Open a native directory chooser; fire callback with the chosen Path."""
-        chosen = filedialog.askdirectory(title="Select CSV directory")
+        chosen = filedialog.askdirectory(title="Select benchmark directory")
         if chosen and self._choose_directory_cb:
             self._choose_directory_cb(Path(chosen))

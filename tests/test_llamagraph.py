@@ -45,6 +45,15 @@ def test_parse_args_path_with_ns():
     assert args.ns is True
 
 
+def test_parse_args_no_md_flag():
+    """--no-md defaults to False and is settable."""
+    import llamagraph
+    with patch.object(sys, 'argv', ['llamagraph']):
+        assert llamagraph.parse_args().no_md is False
+    with patch.object(sys, 'argv', ['llamagraph', '--no-md']):
+        assert llamagraph.parse_args().no_md is True
+
+
 # ── main() path logic tests (GUI creation mocked) ────────────────────────────
 
 
@@ -120,3 +129,57 @@ def test_main_ns_flag(tmp_path):
         llamagraph.main()
         _, kwargs = mock_pp.call_args
         assert kwargs['default_ts'] is False
+
+
+def test_main_no_md_ignores_md_file_with_warning(tmp_path, capsys):
+    """--no-md + .md file path: no initial_file, warning on stderr."""
+    import llamagraph
+    md_file = tmp_path / "bench.md"
+    md_file.write_text(
+        "| model | test | t/s |\n| ----- | ----: | ---: |\n"
+        "| m1 | pp512 | 50.0 ± 1.0 |\n"
+    )
+    mw = MagicMock()
+    pp = MagicMock()
+    with patch.object(sys, 'argv', ['llamagraph', str(md_file), '--no-md']), \
+         patch('tkinter.Tk'), \
+         patch('llamagraph.MainWindow', return_value=mw), \
+         patch('llamagraph.PlotterPresenter', return_value=pp) as mock_pp:
+        llamagraph.main()
+        _, kwargs = mock_pp.call_args
+        assert kwargs['initial_selection_file'] is None
+        assert kwargs['show_md'] is False
+    assert "--no-md" in capsys.readouterr().err
+
+
+def test_main_invalid_file_warns(tmp_path, capsys):
+    """Unrecognized file: no initial_file, warning on stderr."""
+    import llamagraph
+    bad = tmp_path / "notes.txt"
+    bad.write_text("just text\n")
+    mw = MagicMock()
+    pp = MagicMock()
+    with patch.object(sys, 'argv', ['llamagraph', str(bad)]), \
+         patch('tkinter.Tk'), \
+         patch('llamagraph.MainWindow', return_value=mw), \
+         patch('llamagraph.PlotterPresenter', return_value=pp) as mock_pp:
+        llamagraph.main()
+        _, kwargs = mock_pp.call_args
+        assert kwargs['initial_selection_file'] is None
+    assert "not a recognized" in capsys.readouterr().err
+
+
+def test_main_show_md_default_and_no_md(tmp_path):
+    """show_md defaults to True; --no-md sets it to False."""
+    import llamagraph
+    for argv, expected in ((['llamagraph', str(tmp_path)], True),
+                           (['llamagraph', str(tmp_path), '--no-md'], False)):
+        mw = MagicMock()
+        pp = MagicMock()
+        with patch.object(sys, 'argv', argv), \
+             patch('tkinter.Tk'), \
+             patch('llamagraph.MainWindow', return_value=mw), \
+             patch('llamagraph.PlotterPresenter', return_value=pp) as mock_pp:
+            llamagraph.main()
+            _, kwargs = mock_pp.call_args
+            assert kwargs['show_md'] is expected

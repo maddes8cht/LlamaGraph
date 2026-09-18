@@ -21,3 +21,7 @@ matplotlib>=3.8.0          # FigureCanvasTkAgg, mpl_toolkits.mplot3d, mtri
 
 # ── Testing ────────────────────────────────────────────────────────────────────
 pytest>=8.0.0
+pytest-cov>=5.0.0           # only needed for the --cov flags in AGENTS.md
+
+# ── tools/ (no install needed) ───────────────────────────────────────────────
+# tools/llama-optimizer needs stdlib + tkinter only (Python >= 3.7, see its README)

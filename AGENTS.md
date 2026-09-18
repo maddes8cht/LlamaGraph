@@ -15,12 +15,14 @@ Desktop GUI (Tkinter + Matplotlib) that visualizes [llama-bench](https://github.
 | | `view/right_sidebar.py` | Per-dimension filter listboxes |
 | **Presenter** | `presenter/plotter_presenter.py` | Orchestrator — wires callbacks, owns app state |
 | **Utils** | `utils/csv_parser.py`, `utils/colors.py` | CSV parsing, color math |
+| **Tools** | `tools/<tool-name>/` | Standalone helpers (own subdir each); decoupled from MVP, exchange files only. See `tools/README.md` |
 
 ## Entry point
 
-`python llamagraph.py [path] [--ns]`
-- `path`: directory or specific `.csv` file (default: `.`)
+`python llamagraph.py [path] [--ns] [--no-md]`
+- `path`: directory or specific `.csv`/`.md` file (default: `.`)
 - `--ns`: start in latency (nanoseconds) view instead of tokens/s
+- `--no-md`: list CSV files only (hide `.md` files and the `.md` toggle button)
 
 ## Key commands
 

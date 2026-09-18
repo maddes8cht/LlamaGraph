@@ -20,7 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from utils.csv_parser import parse_bench_csv
+from utils.csv_parser import parse_bench_file
 from utils.colors import normalize_series
 
 # Type alias used throughout
@@ -85,7 +85,7 @@ class BenchmarkModel:
         errors: list[str] = []
 
         for path in selected_paths:
-            parsed = parse_bench_csv(Path(path))
+            parsed = parse_bench_file(Path(path))
             if parsed is None:
                 errors.append(f"Could not parse: {Path(path).name}")
                 continue

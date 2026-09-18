@@ -20,7 +20,7 @@ from typing import Optional
 
 from model.benchmark_model import BenchmarkModel
 from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
-from utils.csv_parser import is_llama_bench_csv
+from utils.csv_parser import is_llama_bench_csv, is_llama_bench_md
 from view.main_window import MainWindow
 from view.plot_view import render_2d, render_3d
 
@@ -43,6 +43,7 @@ class PlotterPresenter:
         tg_color: str = DEFAULT_TG_COLOR,
         default_ts: bool = True,
         initial_selection_file: Optional[Path] = None,
+        show_md: bool = True,
     ) -> None:
         self._win = window
         self._model = BenchmarkModel()
@@ -53,7 +54,9 @@ class PlotterPresenter:
         # Application state
         self._show_ts: bool = default_ts          # True = tokens/s, False = ns
         self._sort_by_time: bool = True           # True = mtime desc, False = name
-        self._available_csvs: list[Path] = []     # All valid CSV paths in dir
+        self._md_allowed: bool = show_md          # False with --no-md: no .md ever
+        self._show_md: bool = show_md             # .md toggle state (sidebar button)
+        self._available_csvs: list[Path] = []     # All valid CSV/MD paths in dir
         self._current_selection: list[int] = []   # Currently selected indices
 
         # 3-D camera persistence
@@ -64,6 +67,8 @@ class PlotterPresenter:
 
         # Connect everything
         self._wire_callbacks()
+        self._win.left_sidebar.set_md_toggle_visible(self._md_allowed)
+        self._win.left_sidebar.set_md_toggle_state(self._show_md)
         self.scan_files()
         self._update_metric_button()
 
@@ -95,6 +100,7 @@ class PlotterPresenter:
         ls.set_series_toggle_callback(self._render_plot)
         ls.set_select_all_callback(self._on_select_all)
         ls.set_deselect_all_callback(self._on_deselect_all)
+        ls.set_md_toggle_callback(self._on_md_toggle)
         ls.set_choose_directory_callback(self._on_choose_directory)
 
         # Right sidebar (dimension filters)
@@ -124,19 +130,30 @@ class PlotterPresenter:
         """
         self._start_dir = chosen_path
         self._win.left_sidebar.set_directory_label(chosen_path)
-        # Clear current selection and model data before rescanning
+        self._clear_loaded_data()
+        self.scan_files()
+
+    def _clear_loaded_data(self) -> None:
+        """Clear current selection and model data (list indices become stale)."""
         self._current_selection = []
         self._model.clear()
         self._win.left_sidebar.update_series_toggles([])
         self._win.plot_view.show_placeholder(
-            "📊 Select CSV file(s) with Ctrl+Click to display"
+            "📊 Select CSV/MD file(s) with Ctrl+Click to display"
         )
-        self.scan_files()
+
+    def _find_bench_files(self) -> list[Path]:
+        """Collect candidate benchmark files (side-effect free, for scan + compare)."""
+        files = list(self._start_dir.glob("*.csv"))
+        if self._md_allowed and self._show_md:
+            files += list(self._start_dir.glob("*.md"))
+            files += list(self._start_dir.glob("*.markdown"))
+        return files
 
     def scan_files(self) -> None:
-        """Scan *start_dir* for valid llama-bench CSV files and populate the list."""
+        """Scan *start_dir* for valid llama-bench files (CSV or MD) and populate the list."""
         self._available_csvs = []
-        files = list(self._start_dir.glob("*.csv"))
+        files = self._find_bench_files()
 
         if self._sort_by_time:
             files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -146,7 +163,7 @@ class PlotterPresenter:
             sort_label = "Sort: Name A-Z"
 
         for f in files:
-            if is_llama_bench_csv(f):
+            if is_llama_bench_csv(f) or is_llama_bench_md(f):
                 self._available_csvs.append(f)
 
         names = [f.name for f in self._available_csvs]
@@ -156,6 +173,20 @@ class PlotterPresenter:
     def _on_sort(self) -> None:
         self._sort_by_time = not self._sort_by_time
         self.scan_files()
+
+    def _on_md_toggle(self) -> None:
+        """Show/hide `.md` files in the sidebar (unavailable with `--no-md`)."""
+        if not self._md_allowed:
+            return
+        self._show_md = not self._show_md
+        self._win.left_sidebar.set_md_toggle_state(self._show_md)
+        before = {f.name for f in self._available_csvs}
+        self.scan_files()
+        if {f.name for f in self._available_csvs} != before:
+            # List indices shift when .md files appear/disappear → reset
+            # (skipped when the visible list is unchanged, e.g. no .md files).
+            # No re-scan needed: the list above is already up to date.
+            self._clear_loaded_data()
 
     def _on_select_all(self) -> None:
         self._win.left_sidebar.select_all()
@@ -294,7 +325,7 @@ class PlotterPresenter:
         """
         if not self._model.has_data():
             self._win.plot_view.show_placeholder(
-                "📊 Select CSV file(s) with Ctrl+Click to display"
+                "📊 Select CSV/MD file(s) with Ctrl+Click to display"
             )
             return
 

@@ -23,6 +23,9 @@ class MockSidebar:
         self.series_toggle_cb = None
         self.select_all_cb = None
         self.deselect_all_cb = None
+        self.md_toggle_cb = None
+        self.md_visible: bool | None = None
+        self.md_state: bool | None = None
         self.choose_directory_cb = None
         self._pp_flags: dict[int, bool] = {}
         self._tg_flags: dict[int, bool] = {}
@@ -50,6 +53,15 @@ class MockSidebar:
 
     def set_deselect_all_callback(self, cb):
         self.deselect_all_cb = cb
+
+    def set_md_toggle_callback(self, cb):
+        self.md_toggle_cb = cb
+
+    def set_md_toggle_visible(self, visible: bool):
+        self.md_visible = visible
+
+    def set_md_toggle_state(self, active: bool):
+        self.md_state = active
 
     def set_choose_directory_callback(self, cb):
         self.choose_directory_cb = cb
@@ -312,6 +324,100 @@ def test_scan_files_filters_non_bench_csv(tmp_path):
 
     assert len(presenter._available_csvs) == 1
     assert presenter._available_csvs[0].name == "valid.csv"
+
+
+MD_TABLE = (
+    "| model | backend | ngl | test | t/s |\n"
+    "| ----- | ------- | --: | ----: | ---: |\n"
+    "| m1 | CUDA | 22 | pp512 | 50.0 ± 1.0 |\n"
+    "| m1 | CUDA | 22 | tg128 | 2.0 ± 0.1 |\n"
+)
+
+
+def test_scan_files_lists_md_by_default(tmp_path):
+    """CSV + MD files are both listed; the .md button is visible and on."""
+    (tmp_path / "bench.csv").write_text(
+        "n_prompt,n_gen,avg_ts,avg_ns\n1024,0,100,50000"
+    )
+    (tmp_path / "bench.md").write_text(MD_TABLE)
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+
+    names = sorted(p.name for p in presenter._available_csvs)
+    assert names == ["bench.csv", "bench.md"]
+    assert window.left_sidebar.md_visible is True
+    assert window.left_sidebar.md_state is True
+
+
+def test_no_md_hides_md_files_and_button(tmp_path):
+    """show_md=False (from --no-md): no .md files, no toggle button."""
+    (tmp_path / "bench.csv").write_text(
+        "n_prompt,n_gen,avg_ts,avg_ns\n1024,0,100,50000"
+    )
+    (tmp_path / "bench.md").write_text(MD_TABLE)
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+
+    assert [p.name for p in presenter._available_csvs] == ["bench.csv"]
+    assert window.left_sidebar.md_visible is False
+
+
+def test_md_toggle_hides_and_restores(tmp_path):
+    """The .md toggle filters the list and resets loaded data."""
+    (tmp_path / "bench.csv").write_text(
+        "n_prompt,n_gen,avg_ts,avg_ns\n1024,0,100,50000"
+    )
+    (tmp_path / "bench.md").write_text(MD_TABLE)
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    assert len(presenter._available_csvs) == 2
+
+    presenter._on_md_toggle()
+    assert presenter._show_md is False
+    assert [p.name for p in presenter._available_csvs] == ["bench.csv"]
+    assert window.left_sidebar.md_state is False
+
+    presenter._on_md_toggle()
+    assert presenter._show_md is True
+    assert len(presenter._available_csvs) == 2
+    assert window.left_sidebar.md_state is True
+
+
+def test_md_toggle_resets_selection(tmp_path):
+    """Toggling .md clears stale selection indices and loaded datasets."""
+    csv = create_bench_csv(tmp_path / "bench.csv")
+    (tmp_path / "bench.md").write_text(MD_TABLE)
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._on_file_select([0, 1])
+    assert presenter._model.get_dataset_count() == 2
+
+    presenter._on_md_toggle()
+    assert presenter._current_selection == []
+    assert presenter._model.get_dataset_count() == 0
+    assert [p.name for p in presenter._available_csvs] == ["bench.csv"]
+
+
+def test_md_toggle_keeps_data_when_list_unchanged(tmp_path):
+    """Accidental toggle with no .md files present keeps loaded data."""
+    create_bench_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._on_file_select([0])
+    assert presenter._model.get_dataset_count() == 1
+
+    presenter._on_md_toggle()  # hides .md, but there are none
+    assert presenter._current_selection == [0]
+    assert presenter._model.get_dataset_count() == 1
+    assert [p.name for p in presenter._available_csvs] == ["bench.csv"]
+
+    presenter._on_md_toggle()  # back on, still no .md files
+    assert presenter._model.get_dataset_count() == 1
 
 
 def test_scan_files_sort_by_name(tmp_path):

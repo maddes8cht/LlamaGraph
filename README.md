@@ -55,6 +55,12 @@ X = n-gpu-layers, Y = n-batch, filtered by ubatch, showing normalized PP & TG.
 The 3D view shows that this decrease at `ngl 18` is in fact real for all values of `batch`.  
 Something really strange is going on here, and it's not a limitation of current hardware. This is just an obscure and unfortunate combination of parameters that you want to avoid on your hardware for this model.
 
+### Bundled tools
+
+The [`tools/`](./tools/) directory contains standalone helpers that produce the data LlamaGraph plots:
+
+- **[llama-optimizer](./tools/llama-optimizer/)** — sequential/grid wrapper around `llama-bench` that finds optimal parameters for a GGUF model and writes `bench_*.csv` (+ human-readable `bench_*.md`) straight for LlamaGraph. See `tools/llama-optimizer/llama-optimizer.README.md` for usage and the `params.txt` reference.
+
 ### Current status
 
 This is an early but already very usable version (v0.1).  
