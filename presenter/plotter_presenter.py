@@ -20,7 +20,7 @@ from typing import Optional
 
 from model.benchmark_model import BenchmarkModel
 from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
-from utils.csv_parser import is_llama_bench_csv, is_llama_bench_md
+from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
 from view.plot_view import render_2d, render_3d
 
@@ -57,7 +57,19 @@ class PlotterPresenter:
         self._md_allowed: bool = show_md          # False with --no-md: no .md ever
         self._show_md: bool = show_md             # .md toggle state (sidebar button)
         self._available_csvs: list[Path] = []     # All valid CSV/MD paths in dir
-        self._current_selection: list[int] = []   # Currently selected indices
+        self._visible_csvs: list[Path] = []       # Filtered subset shown in sidebar
+        self._current_selection: list[int] = []   # Selected indices into _visible_csvs
+        self._selected_paths: list[Path] = []     # Loaded paths (survive list rebuilds)
+
+        # Comparison filter (same build / same model): reference values come
+        # from the first selected file; flags are user-toggled in the sidebar.
+        self._file_meta: dict[Path, dict] = {}
+        self._ref_build: Optional[str] = None
+        self._ref_build_commit: Optional[str] = None
+        self._ref_model_key: Optional[str] = None
+        self._ref_model_label: Optional[str] = None
+        self._build_only: bool = False
+        self._model_only: bool = False
 
         # 3-D camera persistence
         self._cam_3d: Optional[dict] = None
@@ -79,7 +91,7 @@ class PlotterPresenter:
     def _handle_initial_selection(self, file_path: Path) -> None:
         """Finds the index of the provided file and selects it."""
         try:
-            idx = self._available_csvs.index(file_path)
+            idx = self._visible_csvs.index(file_path)
             self._win.left_sidebar.select_index(idx)
             self._on_file_select([idx])
         except ValueError:
@@ -102,6 +114,7 @@ class PlotterPresenter:
         ls.set_deselect_all_callback(self._on_deselect_all)
         ls.set_md_toggle_callback(self._on_md_toggle)
         ls.set_choose_directory_callback(self._on_choose_directory)
+        ls.set_compat_filter_callback(self._on_compat_filter)
 
         # Right sidebar (dimension filters)
         rs.set_filter_change_callback(self._on_filter_change)
@@ -130,17 +143,142 @@ class PlotterPresenter:
         """
         self._start_dir = chosen_path
         self._win.left_sidebar.set_directory_label(chosen_path)
+        self._reset_compat_filter()
         self._clear_loaded_data()
         self.scan_files()
+
+    def _reset_compat_filter(self) -> None:
+        """Clear reference values and flags of the comparison filter."""
+        self._ref_build = None
+        self._ref_build_commit = None
+        self._ref_model_key = None
+        self._ref_model_label = None
+        self._build_only = False
+        self._model_only = False
 
     def _clear_loaded_data(self) -> None:
         """Clear current selection and model data (list indices become stale)."""
         self._current_selection = []
+        self._selected_paths = []
         self._model.clear()
         self._win.left_sidebar.update_series_toggles([])
         self._win.plot_view.show_placeholder(
             "📊 Select CSV/MD file(s) with Ctrl+Click to display"
         )
+
+    def _get_meta(self, path: Path) -> dict:
+        """Cached file-level metadata (build/model) for the compat filter."""
+        meta = self._file_meta.get(path)
+        if meta is None:
+            meta = get_bench_file_meta(path)
+            self._file_meta[path] = meta
+        return meta
+
+    def _matches_compat_filter(self, path: Path) -> bool:
+        """True if *path* passes the active build/model restrictions."""
+        if self._build_only:
+            if self._ref_build is None:
+                return True  # no reference → cannot restrict
+            if self._get_meta(path).get('build_number') != self._ref_build:
+                return False
+        if self._model_only:
+            if self._ref_model_key is None:
+                return True
+            if self._get_meta(path).get('model_key') != self._ref_model_key:
+                return False
+        return True
+
+    def _refresh_visible_files(self) -> None:
+        """
+        Recompute the filtered file list, repopulate the sidebar, restore the
+        highlight for still-visible loaded paths, and update the filter box.
+        Never touches the model — pure list/bookkeeping refresh.
+        """
+        self._visible_csvs = [
+            f for f in self._available_csvs if self._matches_compat_filter(f)
+        ]
+        if self._sort_by_time:
+            sort_label = "Sort: Time ↓"
+        else:
+            sort_label = "Sort: Name A-Z"
+        names = [f.name for f in self._visible_csvs]
+        self._win.left_sidebar.populate_file_list(names, sort_label)
+
+        # Restore highlight for loaded paths that are still visible.
+        # populate_file_list() cleared the widget selection; select_index()
+        # is silent (fires no callback), so no model reload is triggered.
+        self._current_selection = [
+            i for i, f in enumerate(self._visible_csvs)
+            if f in self._selected_paths
+        ]
+        for i in self._current_selection:
+            try:
+                self._win.left_sidebar.select_index(i)
+            except Exception as exc:
+                print(f"[Presenter] Reselect warning: {exc}")
+
+        self._update_compat_box()
+
+    def _update_compat_box(self) -> None:
+        """Show/hide the sidebar comparison-filter box from current state."""
+        update = self._win.left_sidebar.update_compat_filter
+        if not self._selected_paths:
+            update(None, None)
+            return
+        if self._ref_build is not None:
+            build_text = f"Build {self._ref_build}"
+            if self._ref_build_commit:
+                build_text += f" ({self._ref_build_commit})"
+        else:
+            build_text = None
+        update(build_text, self._ref_model_label,
+               self._build_only, self._model_only)
+
+    def _update_compat_reference(self) -> None:
+        """
+        Point the comparison filter at the first selected file.
+        Keeps the user's on/off flags; drops a flag whose reference vanished.
+        """
+        if not self._selected_paths:
+            self._reset_compat_filter()
+            return
+        meta = self._get_meta(self._selected_paths[0])
+        self._ref_build = meta.get('build_number')
+        self._ref_build_commit = meta.get('build_commit')
+        self._ref_model_key = meta.get('model_key')
+        self._ref_model_label = meta.get('model_label')
+        if self._ref_build is None:
+            self._build_only = False
+        if self._ref_model_key is None:
+            self._model_only = False
+
+    def _on_compat_filter(self, kind: str, active: bool) -> None:
+        """Called by the sidebar when a comparison checkbox is toggled."""
+        if kind == 'build':
+            # Only lock to a build when we actually know the reference.
+            self._build_only = bool(active) and self._ref_build is not None
+        elif kind == 'model':
+            self._model_only = bool(active) and self._ref_model_key is not None
+        else:
+            return
+        if self._build_only or self._model_only:
+            kept = [p for p in self._selected_paths
+                    if self._matches_compat_filter(p)]
+            if len(kept) != len(self._selected_paths):
+                # A loaded file is now hidden by the filter: drop it from
+                # the model so list, highlight, and plot stay consistent.
+                # (The first selected file defines the reference, so `kept`
+                # is never empty here.)
+                self._selected_paths = kept
+                self._reload_selection()
+        self._refresh_visible_files()
+
+    def _reload_selection(self) -> None:
+        """(Re)load the model from _selected_paths and refresh dependent UI."""
+        errors = self._model.load_files(list(self._selected_paths))
+        for err in errors:
+            print(f"[Presenter] {err}")
+        self._refresh_ui_after_load()
 
     def _find_bench_files(self) -> list[Path]:
         """Collect candidate benchmark files (side-effect free, for scan + compare)."""
@@ -151,23 +289,40 @@ class PlotterPresenter:
         return files
 
     def scan_files(self) -> None:
-        """Scan *start_dir* for valid llama-bench files (CSV or MD) and populate the list."""
+        """
+        Scan *start_dir* for valid llama-bench files (CSV or MD) and populate
+        the list. Each candidate is parsed once; files that fail to parse are
+        skipped (so unlike a header-only probe, files with zero valid rows
+        are not listed).
+        """
         self._available_csvs = []
+        self._file_meta = {}
         files = self._find_bench_files()
 
         if self._sort_by_time:
             files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-            sort_label = "Sort: Time ↓"
         else:
             files.sort(key=lambda f: f.name)
-            sort_label = "Sort: Name A-Z"
 
         for f in files:
-            if is_llama_bench_csv(f) or is_llama_bench_md(f):
-                self._available_csvs.append(f)
+            parsed = parse_bench_file(f)
+            if parsed is None:
+                continue
+            self._available_csvs.append(f)
+            meta = parsed.get('file_meta')
+            self._file_meta[f] = meta if isinstance(meta, dict) else {}
 
-        names = [f.name for f in self._available_csvs]
-        self._win.left_sidebar.populate_file_list(names, sort_label)
+        if self._selected_paths:
+            # Drop loaded paths that no longer exist (or parse) on disk and
+            # reload so the model never holds data for unlisted files.
+            still_here = set(self._available_csvs)
+            kept = [p for p in self._selected_paths if p in still_here]
+            if len(kept) != len(self._selected_paths):
+                self._selected_paths = kept
+                self._update_compat_reference()
+                self._reload_selection()
+
+        self._refresh_visible_files()
         self._win.left_sidebar.set_directory_label(self._start_dir)
 
     def _on_sort(self) -> None:
@@ -186,7 +341,9 @@ class PlotterPresenter:
             # List indices shift when .md files appear/disappear → reset
             # (skipped when the visible list is unchanged, e.g. no .md files).
             # No re-scan needed: the list above is already up to date.
+            self._reset_compat_filter()
             self._clear_loaded_data()
+            self._refresh_visible_files()
 
     def _on_select_all(self) -> None:
         self._win.left_sidebar.select_all()
@@ -198,16 +355,34 @@ class PlotterPresenter:
 
     def _on_file_select(self, selected_indices: list[int]) -> None:
         """Called by LeftSidebar when the user changes the file selection."""
-        self._current_selection = selected_indices
+        valid = [i for i in selected_indices if i < len(self._visible_csvs)]
+        paths = [self._visible_csvs[i] for i in valid]
+        self._current_selection = valid
+        self._selected_paths = list(paths)
 
-        paths = [self._available_csvs[i] for i in selected_indices
-                 if i < len(self._available_csvs)]
+        if not paths:
+            # Last file deselected → filters reset, full list returns.
+            self._reset_compat_filter()
+            errors = self._model.load_files([])
+            for err in errors:
+                print(f"[Presenter] {err}")
+            self._refresh_ui_after_load()
+            self._refresh_visible_files()
+            return
 
         errors = self._model.load_files(paths)
         for err in errors:
             print(f"[Presenter] {err}")
 
+        self._update_compat_reference()
         self._refresh_ui_after_load()
+        if self._build_only or self._model_only:
+            # Narrow the list to same-build/same-model files; the just-loaded
+            # paths always match their own reference, so they stay visible.
+            # (Select All then naturally covers only the filtered files.)
+            self._refresh_visible_files()
+        else:
+            self._update_compat_box()
 
     def _refresh_ui_after_load(self) -> None:
         """Update axis comboboxes, series toggles, right sidebar after a load."""

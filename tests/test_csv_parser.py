@@ -3,7 +3,9 @@ import csv
 import pathlib
 from pathlib import Path
 from utils.csv_parser import (
+    get_bench_file_meta,
     parse_bench_csv,
+    parse_bench_md,
     is_llama_bench_csv,
 )
 
@@ -252,3 +254,61 @@ def test_parse_bench_csv_invalid_ts_warning_print(capsys, tmp_path):
     assert captured.out
     assert "csv_parser" in captured.out
     assert "Invalid" in captured.out
+
+
+def test_parse_bench_csv_keeps_file_meta(tmp_path):
+    """Build/model metadata survives parsing (for the comparison filter)."""
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text(
+        "build_commit,build_number,model_filename,model_type,"
+        "n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns\n"
+        "972d2313b,11028,G:\\models\\foo.gguf,TestType,"
+        "1024,0,100.5,5.2,50250,2600\n"
+        "972d2313b,11028,G:\\models\\foo.gguf,TestType,"
+        "0,256,85.3,4.1,42650,2050\n"
+    )
+
+    result = parse_bench_csv(Path(csv_file))
+
+    assert result is not None
+    meta = result["file_meta"]
+    assert meta["build_commit"] == "972d2313b"
+    assert meta["build_number"] == "11028"
+    assert meta["model_filename"] == "G:\\models\\foo.gguf"
+    # Key/label use the basename so absolute paths compare across machines
+    assert meta["model_key"] == "foo.gguf"
+    assert meta["model_label"] == "foo.gguf"
+    # ... while the fields stay out of the plot dimensions
+    assert "build_number" not in result["varying_params"]
+    assert "model_filename" not in result["varying_params"]
+
+
+def test_get_bench_file_meta_missing_fields(tmp_path):
+    """Files without metadata columns yield None entries (never raise)."""
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("n_prompt,n_gen,avg_ts,avg_ns\n1024,0,100,50000")
+
+    meta = get_bench_file_meta(Path(csv_file))
+
+    assert meta["build_number"] is None
+    assert meta["model_key"] is None
+    assert get_bench_file_meta(tmp_path / "does-not-exist.csv")["build_number"] is None
+
+
+def test_parse_bench_md_keeps_file_meta(tmp_path):
+    """MD tables expose build info + model label as file meta."""
+    md_file = tmp_path / "test.md"
+    md_file.write_text(
+        "| model | backend | test | t/s |\n"
+        "| ----- | ------- | ----: | ---: |\n"
+        "| m1 | CUDA | pp512 | 50.0 ± 1.0 |\n"
+        "| m1 | CUDA | tg128 | 2.0 ± 0.1 |\n"
+        "\nbuild: 972d2313b (11028)\n"
+    )
+
+    result = parse_bench_md(Path(md_file))
+
+    assert result is not None
+    assert result["file_meta"]["build_number"] == "11028"
+    assert result["file_meta"]["build_commit"] == "972d2313b"
+    assert result["file_meta"]["model_key"] == "m1"

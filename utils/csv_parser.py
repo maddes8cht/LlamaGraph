@@ -23,6 +23,63 @@ _IGNORE_COLS = frozenset({
 })
 
 
+def _clean_str(value) -> Optional[str]:
+    """Strip a raw CSV/MD cell; return None when empty/missing."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def _model_key_and_label(
+    model_filename: Optional[str],
+    model_type: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Derive a comparable model key and a short display label.
+
+    The CSV stores an absolute path (e.g. ``G:\\models\\...\\foo.gguf``)
+    which differs across machines, so the key/label use the basename.
+    Falls back to ``model_type`` when no filename is available
+    (e.g. markdown files).
+    """
+    if model_filename:
+        base = re.split(r'[\\/]', model_filename.strip())[-1].strip()
+        if base:
+            return base, base
+    if model_type:
+        label = model_type.strip()
+        if label:
+            return label, label
+    return None, None
+
+
+def _csv_file_meta(first_row: dict) -> dict:
+    """Extract file-level metadata from the first CSV data row."""
+    build_commit = _clean_str(first_row.get('build_commit'))
+    build_number = _clean_str(first_row.get('build_number'))
+    model_filename = _clean_str(first_row.get('model_filename'))
+    model_type = _clean_str(first_row.get('model_type'))
+    key, label = _model_key_and_label(model_filename, model_type)
+    return {
+        'build_commit': build_commit,
+        'build_number': build_number,
+        'model_filename': model_filename,
+        'model_key': key,
+        'model_label': label,
+    }
+
+
+def _empty_file_meta() -> dict:
+    return {
+        'build_commit': None,
+        'build_number': None,
+        'model_filename': None,
+        'model_key': None,
+        'model_label': None,
+    }
+
+
 def parse_bench_csv(csv_path: Path) -> Optional[dict]:
     """
     Parse a single llama-bench CSV file.
@@ -127,6 +184,7 @@ def parse_bench_csv(csv_path: Path) -> Optional[dict]:
         'varying_params': varying_params,
         'constant_params': constant_params,
         'raw_rows': raw_rows,
+        'file_meta': _csv_file_meta(rows[0]),
     }
 
 
@@ -366,11 +424,25 @@ def parse_bench_md(md_path: Path) -> Optional[dict]:
     if build_number:
         constant_params.setdefault('build_number', build_number)
 
+    # Markdown tables carry no model filename — use the `model` column
+    # (e.g. "qwen35 27B Q5_K - Medium") as key/label fallback.
+    first = raw_rows[0] if raw_rows else {}
+    md_model_label = _clean_str(first.get('model'))
+    md_key, md_label = _model_key_and_label(None, md_model_label)
+    file_meta = {
+        'build_commit': build_commit,
+        'build_number': build_number,
+        'model_filename': None,
+        'model_key': md_key,
+        'model_label': md_label,
+    }
+
     return {
         'source': str(md_path),
         'varying_params': varying_params,
         'constant_params': {k: str(v) for k, v in constant_params.items()},
         'raw_rows': raw_rows,
+        'file_meta': file_meta,
     }
 
 
@@ -389,3 +461,30 @@ def parse_bench_file(path: Path) -> Optional[dict]:
     if parsed is not None:
         return parsed
     return parse_bench_md(path)
+
+
+def get_bench_file_meta(path: Path) -> dict:
+    """
+    Lightweight file-level metadata for the comparison filter.
+
+    Returns ``{'build_commit', 'build_number', 'model_filename',
+    'model_key', 'model_label'}`` with None for missing values.
+    Never raises — unparseable files yield an empty meta dict.
+    """
+    try:
+        parsed = parse_bench_file(Path(path))
+    except Exception as exc:
+        print(f"[csv_parser] Cannot read meta of {Path(path).name}: {exc}")
+        return _empty_file_meta()
+    if not parsed:
+        return _empty_file_meta()
+    meta = parsed.get('file_meta')
+    if isinstance(meta, dict):
+        return {
+            'build_commit': meta.get('build_commit'),
+            'build_number': meta.get('build_number'),
+            'model_filename': meta.get('model_filename'),
+            'model_key': meta.get('model_key'),
+            'model_label': meta.get('model_label'),
+        }
+    return _empty_file_meta()

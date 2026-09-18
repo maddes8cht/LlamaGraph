@@ -7,6 +7,8 @@ Displays:
   - Current working directory label
   - File list (Listbox with multi-select)
   - Sort / Refresh buttons
+  - Comparison filter ("Only this build" / "Only this model" checkboxes,
+    shown once at least one file is selected)
   - Per-series PP/TG checkboxes (rebuilt whenever selection changes)
 
 This class is purely UI — it only fires callbacks to the Presenter.
@@ -43,6 +45,7 @@ class LeftSidebar(tk.Frame):
       set_deselect_all_callback(cb)       – cb()
       set_md_toggle_callback(cb)          – cb()  (.md visibility toggled)
       set_choose_directory_callback(cb)   – cb(chosen_path: Path)
+      set_compat_filter_callback(cb)      – cb(kind, active)  (kind in {'build','model'})
     """
 
     def __init__(self, parent: tk.Widget, pp_color: str = DEFAULT_PP_COLOR,
@@ -54,6 +57,12 @@ class LeftSidebar(tk.Frame):
         # Per-series toggle variables {idx: tk.IntVar}
         self._pp_vars: dict[int, tk.IntVar] = {}
         self._tg_vars: dict[int, tk.IntVar] = {}
+
+        # Comparison-filter state (build / model). Values are display strings
+        # provided by the Presenter; None hides the whole box.
+        self._compat_build_var = tk.IntVar(value=0)
+        self._compat_model_var = tk.IntVar(value=0)
+        self._compat_cb: Optional[Callable[[str, bool], None]] = None
 
         # Callbacks (injected by Presenter)
         self._file_select_cb: Optional[Callable] = None
@@ -133,6 +142,48 @@ class LeftSidebar(tk.Frame):
         scrollbar.config(command=self._file_list.yview)
         self._file_list.bind('<<ListboxSelect>>', self._on_listbox_select)
 
+        # Comparison-filter area (between file list and series toggles):
+        # once ≥1 file is selected, offers "same build" / "same model" filters
+        # that narrow the file list above. Hidden when nothing is selected.
+        self._compat_frame = tk.Frame(self, bg=COLORS['bg'])
+        # packed on demand by update_compat_filter(); starts hidden.
+        self._compat_title = tk.Label(
+            self._compat_frame, text="🔒 Comparison Filter",
+            bg=COLORS['bg'], fg=COLORS['fg'],
+            font=('Segoe UI', 9, 'bold'),
+        )
+        self._compat_title.pack(anchor='w', padx=7, pady=(4, 0))
+
+        self._compat_build_label = tk.Label(
+            self._compat_frame, text="",
+            bg=COLORS['bg'], fg='#888888',
+            font=('Consolas', 7), anchor='w', justify='left',
+        )
+        self._compat_build_label.pack(anchor='w', padx=7)
+        self._compat_build_check = tk.Checkbutton(
+            self._compat_frame, text="Only this build",
+            variable=self._compat_build_var,
+            command=lambda: self._on_compat_toggle('build'),
+            bg=COLORS['bg'], fg=COLORS['fg'],
+            selectcolor=COLORS['checkbox_active'], font=('Segoe UI', 8),
+        )
+        self._compat_build_check.pack(anchor='w', padx=5)
+
+        self._compat_model_label = tk.Label(
+            self._compat_frame, text="",
+            bg=COLORS['bg'], fg='#888888',
+            font=('Consolas', 7), anchor='w', justify='left',
+        )
+        self._compat_model_label.pack(anchor='w', padx=7, pady=(4, 0))
+        self._compat_model_check = tk.Checkbutton(
+            self._compat_frame, text="Only this model",
+            variable=self._compat_model_var,
+            command=lambda: self._on_compat_toggle('model'),
+            bg=COLORS['bg'], fg=COLORS['fg'],
+            selectcolor=COLORS['checkbox_active'], font=('Segoe UI', 8),
+        )
+        self._compat_model_check.pack(anchor='w', padx=5, pady=(0, 4))
+
         # Series-toggle area (populated dynamically)
         self._series_header = tk.Label(
             self, text="🎛 Series Toggles",
@@ -211,6 +262,49 @@ class LeftSidebar(tk.Frame):
         """Reflect whether `.md` files are currently listed (accent = on)."""
         self._md_btn.config(bg=COLORS['accent'] if active else '#444')
 
+    def update_compat_filter(
+        self,
+        build_text: Optional[str],
+        model_text: Optional[str],
+        build_active: bool = False,
+        model_active: bool = False,
+    ) -> None:
+        """
+        Show/update/hide the comparison-filter box.
+
+        *build_text*/*model_text* are display strings for the reference file
+        (e.g. ``"Build 11028 (972d2313b)"``, ``"foo.gguf"``).  When both are
+        None the box is hidden (nothing selected).  A single None hides just
+        that row's label/check (metadata missing) while keeping the other.
+        """
+        if build_text is None and model_text is None:
+            self._compat_frame.pack_forget()
+            self._compat_build_var.set(0)
+            self._compat_model_var.set(0)
+            return
+
+        self._compat_frame.pack(fill=tk.X, padx=0, pady=0, before=self._series_header)
+
+        if build_text is None:
+            self._compat_build_label.pack_forget()
+            self._compat_build_check.pack_forget()
+            self._compat_build_var.set(0)
+        else:
+            self._compat_build_label.config(text=build_text)
+            self._compat_build_label.pack(anchor='w', padx=7)
+            self._compat_build_check.pack(anchor='w', padx=5)
+            self._compat_build_var.set(1 if build_active else 0)
+
+        if model_text is None:
+            self._compat_model_label.pack_forget()
+            self._compat_model_check.pack_forget()
+            self._compat_model_var.set(0)
+        else:
+            self._compat_model_label.config(text=model_text)
+            self._compat_model_label.pack(anchor='w', padx=7, pady=(4, 0))
+            self._compat_model_check.pack(anchor='w', padx=5, pady=(0, 4))
+            self._compat_model_var.set(1 if model_active else 0)
+
     def update_series_toggles(self, dataset_paths: list[Path]) -> None:
         """
         Rebuild the per-series PP/TG checkboxes.
@@ -286,6 +380,10 @@ class LeftSidebar(tk.Frame):
         """Register callback called with the chosen Path when user picks a dir."""
         self._choose_directory_cb = cb
 
+    def set_compat_filter_callback(self, cb: Callable[[str, bool], None]) -> None:
+        """Register callback called as cb(kind, active) with kind in {'build','model'}."""
+        self._compat_cb = cb
+
     # ── Internal event handlers ───────────────────────────────────────────────
 
     def _on_listbox_select(self, _event) -> None:
@@ -303,6 +401,14 @@ class LeftSidebar(tk.Frame):
     def _on_series_toggle(self) -> None:
         if self._series_toggle_cb:
             self._series_toggle_cb()
+
+    def _on_compat_toggle(self, kind: str) -> None:
+        if self._compat_cb:
+            if kind == 'build':
+                self._compat_cb('build', bool(self._compat_build_var.get()))
+            elif kind == 'model':
+                self._compat_cb('model', bool(self._compat_model_var.get()))
+            # Unknown kinds are ignored (never fire a mismatched callback).
 
     def _on_select_all(self) -> None:
         if self._select_all_cb:

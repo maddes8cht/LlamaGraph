@@ -27,6 +27,8 @@ class MockSidebar:
         self.md_visible: bool | None = None
         self.md_state: bool | None = None
         self.choose_directory_cb = None
+        self.compat_filter_cb = None
+        self.last_compat = None
         self._pp_flags: dict[int, bool] = {}
         self._tg_flags: dict[int, bool] = {}
         self.last_names: list[str] | None = None
@@ -65,6 +67,13 @@ class MockSidebar:
 
     def set_choose_directory_callback(self, cb):
         self.choose_directory_cb = cb
+
+    def set_compat_filter_callback(self, cb):
+        self.compat_filter_cb = cb
+
+    def update_compat_filter(self, build_text, model_text,
+                             build_active=False, model_active=False):
+        self.last_compat = (build_text, model_text, build_active, model_active)
 
     def populate_file_list(self, names: list[str], sort_label: str):
         self.last_names = list(names)
@@ -1052,3 +1061,172 @@ def test_save_camera_exception_path(tmp_path):
     assert state['elev'] == 30.0
     assert state['azim'] == -45.0
     assert 'xlim' not in state  # exception caught and ignored
+
+
+# ── Comparison filter (same build / same model) ─────────────────────────────
+
+
+def _create_meta_csv(path: Path, build_number: str, model_filename: str,
+                     build_commit: str = "abc1234") -> Path:
+    """Create a valid llama-bench CSV carrying build/model metadata."""
+    path.write_text(
+        "build_commit,build_number,model_filename,model_type,"
+        "n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns,n_gpu_layers\n"
+        f"{build_commit},{build_number},{model_filename},TestModel,"
+        "1024,0,100.5,5.2,50250,2600,32\n"
+        f"{build_commit},{build_number},{model_filename},TestModel,"
+        "0,256,85.3,4.1,42650,2050,32\n"
+    )
+    return path
+
+
+def test_compat_box_hidden_without_selection(tmp_path):
+    """No file selected → the comparison-filter box stays hidden."""
+    _create_meta_csv(tmp_path / "a.csv", "11028", "model-A.gguf")
+    window = MockMainWindow()
+    PlotterPresenter(window, tmp_path)
+
+    assert window.left_sidebar.last_compat[0] is None
+    assert window.left_sidebar.last_compat[1] is None
+
+
+def test_compat_box_shows_reference_after_select(tmp_path):
+    """Selecting a file offers its build number and model as filter options."""
+    _create_meta_csv(tmp_path / "a.csv", "11028", "model-A.gguf")
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._on_file_select([0])
+
+    build_text, model_text, build_active, model_active = \
+        window.left_sidebar.last_compat
+    assert "11028" in (build_text or "")
+    assert "model-A.gguf" in (model_text or "")
+    assert build_active is False
+    assert model_active is False
+
+
+def test_build_filter_narrows_visible_list(tmp_path):
+    """'Only this build' hides files with a different build number."""
+    _create_meta_csv(tmp_path / "a.csv", "11028", "same.gguf")
+    _create_meta_csv(tmp_path / "b.csv", "99999", "same.gguf")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    assert len(presenter._visible_csvs) == 2
+
+    # Select one file, then lock to its build
+    names = window.left_sidebar.last_names
+    idx_a = names.index("a.csv")
+    presenter._on_file_select([idx_a])
+    assert presenter._ref_build == "11028"
+
+    presenter._on_compat_filter('build', True)
+    visible = [p.name for p in presenter._visible_csvs]
+    assert visible == ["a.csv"]
+    assert window.left_sidebar.last_names == ["a.csv"]
+    assert window.left_sidebar.last_compat[2] is True
+
+
+def test_model_filter_uses_basename(tmp_path):
+    """Model comparison uses the filename, not the absolute CSV path."""
+    _create_meta_csv(tmp_path / "a.csv", "11028", "G:\\models\\foo.gguf")
+    _create_meta_csv(tmp_path / "b.csv", "11028", "/other/dir/foo.gguf")
+    _create_meta_csv(tmp_path / "c.csv", "11028", "bar.gguf")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    names = window.left_sidebar.last_names
+    presenter._on_file_select([names.index("a.csv")])
+
+    presenter._on_compat_filter('model', True)
+    visible = sorted(p.name for p in presenter._visible_csvs)
+    assert visible == ["a.csv", "b.csv"]
+
+
+def test_deselect_all_resets_filter_and_restores_list(tmp_path):
+    """Empty selection clears the filters and shows all files again."""
+    _create_meta_csv(tmp_path / "a.csv", "11028", "same.gguf")
+    _create_meta_csv(tmp_path / "b.csv", "99999", "same.gguf")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    names = window.left_sidebar.last_names
+    presenter._on_file_select([names.index("a.csv")])
+    presenter._on_compat_filter('build', True)
+    assert len(presenter._visible_csvs) == 1
+
+    presenter._on_file_select([])  # last file deselected
+    assert presenter._build_only is False
+    assert presenter._model_only is False
+    assert len(presenter._visible_csvs) == 2
+    assert window.left_sidebar.last_compat[0] is None
+
+
+def test_select_all_covers_only_visible_files(tmp_path):
+    """With an active filter, indices map to the visible (filtered) list."""
+    _create_meta_csv(tmp_path / "a.csv", "11028", "same.gguf")
+    _create_meta_csv(tmp_path / "b.csv", "99999", "same.gguf")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    names = window.left_sidebar.last_names
+    presenter._on_file_select([names.index("a.csv")])
+    presenter._on_compat_filter('build', True)
+
+    # "Select All" on the single visible file loads exactly that file
+    presenter._on_file_select([0])
+    assert presenter._model.get_dataset_count() == 1
+    assert presenter._selected_paths == presenter._visible_csvs == \
+        [p for p in presenter._available_csvs if p.name == "a.csv"]
+
+
+def test_build_filter_drops_hidden_loaded_file(tmp_path):
+    """Mixed-build multi-select + filter: the hidden file leaves the model."""
+    _create_meta_csv(tmp_path / "a.csv", "11028", "same.gguf")
+    _create_meta_csv(tmp_path / "b.csv", "99999", "same.gguf")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    names = window.left_sidebar.last_names
+    presenter._on_file_select([names.index("a.csv"), names.index("b.csv")])
+    assert presenter._model.get_dataset_count() == 2
+
+    presenter._on_compat_filter('build', True)
+
+    assert [p.name for p in presenter._visible_csvs] == ["a.csv"]
+    assert presenter._selected_paths == [
+        p for p in presenter._available_csvs if p.name == "a.csv"]
+    assert presenter._model.get_dataset_count() == 1
+    assert window.left_sidebar.last_paths == presenter._selected_paths
+
+
+def test_scan_skips_files_without_valid_rows(tmp_path):
+    """Header-valid files with zero parsable rows are not listed."""
+    (tmp_path / "empty.csv").write_text(
+        "n_prompt,n_gen,avg_ts,avg_ns\n0,0,100,50000")
+    _create_meta_csv(tmp_path / "good.csv", "11028", "same.gguf")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+
+    assert [p.name for p in presenter._available_csvs] == ["good.csv"]
+
+
+def test_scan_prunes_deleted_selection(tmp_path):
+    """Files deleted from disk leave the selection and the model."""
+    csv_a = _create_meta_csv(tmp_path / "a.csv", "11028", "same.gguf")
+    _create_meta_csv(tmp_path / "b.csv", "11028", "same.gguf")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    names = window.left_sidebar.last_names
+    presenter._on_file_select([names.index("a.csv"), names.index("b.csv")])
+    assert presenter._model.get_dataset_count() == 2
+
+    csv_a.unlink()
+    presenter.scan_files()
+
+    assert [p.name for p in presenter._available_csvs] == ["b.csv"]
+    assert presenter._selected_paths == [
+        p for p in presenter._available_csvs if p.name == "b.csv"]
+    assert presenter._model.get_dataset_count() == 1
