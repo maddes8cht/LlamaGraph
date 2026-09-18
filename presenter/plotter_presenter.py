@@ -480,6 +480,15 @@ class PlotterPresenter:
         except Exception as exc:
             print(f"[Presenter] Camera restore warning: {exc}")
 
+    def _restore_rotation(self, ax, state: dict) -> None:
+        """Restore only the viewing angle (elev/azim/roll), not the limits."""
+        try:
+            ax.view_init(elev=state['elev'], azim=state['azim'])
+            if 'roll' in state and hasattr(ax, 'roll'):
+                ax.roll = state['roll']
+        except Exception as exc:
+            print(f"[Presenter] Camera restore warning: {exc}")
+
     def _on_home_3d(self) -> bool:
         """
         Called by CustomNavigationToolbar.home().
@@ -569,9 +578,16 @@ class PlotterPresenter:
             )
             return
 
-        # Detect axis change — reset camera on new axis combo
-        sig = (x_param, y_param)
-        if sig != self._last_3d_signature:
+        # Detect scale-relevant changes — a new axis combo, metric,
+        # normalization, or series visibility means the old axis limits
+        # (especially zlim) no longer fit the data. The home view is then
+        # re-recorded and only the viewing angle is carried over, so a
+        # stale zlim can never squash or blow out rescaled surfaces.
+        # Pure rotations and dimension-filter changes keep the full camera.
+        sig = (x_param, y_param, normalize, scale_pct,
+               self._show_ts, show_pp, show_tg)
+        scale_changed = (sig != self._last_3d_signature)
+        if scale_changed:
             self._cam_3d = None
             self._home_cam_3d = None
             self._last_3d_signature = sig
@@ -581,7 +597,7 @@ class PlotterPresenter:
         if self._current_3d_ax is not None:
             saved_cam = self._save_camera(self._current_3d_ax)
 
-        points_pp, points_tg = self._model.get_3d_points(
+        points_pp, points_tg, stats = self._model.get_3d_points(
             x_dim=x_param,
             y_dim=y_param,
             show_ts=self._show_ts,
@@ -607,6 +623,11 @@ class PlotterPresenter:
             level_val=self._win.level_val,
             surface_style=self._win.surface_style,
             subdiv_level=self._win.subdiv_level,
+            normalized=normalize,
+            pp_min=stats['pp_min'],
+            pp_max=stats['pp_max'],
+            tg_min=stats['tg_min'],
+            tg_max=stats['tg_max'],
         )
 
         self._current_3d_ax = ax
@@ -622,13 +643,17 @@ class PlotterPresenter:
             ax.set_yticks(range(len(y_labels)))
             ax.set_yticklabels(y_labels)
 
-        # Record home camera at first render for this axis combo
+        # Record home camera at first render for this scale signature
         if self._home_cam_3d is None:
             self._home_cam_3d = self._save_camera(ax)
 
-        # Restore the user's last camera position
+        # Restore the user's last camera position (angle only when the
+        # data scale changed, full camera otherwise)
         if saved_cam is not None:
-            self._restore_camera(ax, saved_cam)
+            if scale_changed:
+                self._restore_rotation(ax, saved_cam)
+            else:
+                self._restore_camera(ax, saved_cam)
             self._win.plot_view.redraw_idle()
 
     # ── Pick event (2-D tooltip) ──────────────────────────────────────────────

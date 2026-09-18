@@ -1230,3 +1230,53 @@ def test_scan_prunes_deleted_selection(tmp_path):
     assert presenter._selected_paths == [
         p for p in presenter._available_csvs if p.name == "b.csv"]
     assert presenter._model.get_dataset_count() == 1
+
+
+def _mock_3d_ax(elev: float = 30.0, azim: float = -45.0) -> MagicMock:
+    """Axes3D stand-in with usable camera state (no real 3D required)."""
+    ax = MagicMock()
+    ax.elev = elev
+    ax.azim = azim
+    ax.get_xlim3d.return_value = (0, 10)
+    ax.get_ylim3d.return_value = (0, 20)
+    ax.get_zlim3d.return_value = (0, 120)
+    return ax
+
+
+def test_3d_norm_toggle_restores_rotation_only(tmp_path):
+    """A Norm toggle re-records home and must not reapply the stale zlim."""
+    csv1 = create_bench_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    presenter._available_csvs = [csv1]
+    presenter._visible_csvs = [csv1]
+    presenter._on_file_select([0])
+
+    window._mode_3d = 1
+    window._axis_x = "params"
+    window._axis_y = "n_gpu_layers"
+    window._normalize = 0
+
+    mock_fig = MagicMock()
+    ax1, ax2, ax3 = _mock_3d_ax(), _mock_3d_ax(elev=60.0), _mock_3d_ax()
+
+    with patch('presenter.plotter_presenter.render_3d',
+               side_effect=[(mock_fig, ax1), (mock_fig, ax2), (mock_fig, ax3)]):
+        with patch.object(window.plot_view, 'render'):
+            presenter._render_plot()  # absolute scale
+            home_abs = presenter._home_cam_3d
+            assert home_abs['zlim'] == (0, 120)
+
+            window._normalize = 1
+            presenter._render_plot()  # normalized scale
+            assert presenter._home_cam_3d is not home_abs
+            assert presenter._home_cam_3d['elev'] == 60.0
+            # Rotation carried over, stale absolute zlim NOT reapplied
+            ax2.view_init.assert_called_once_with(elev=30.0, azim=-45.0)
+            ax2.set_zlim3d.assert_not_called()
+            ax2.set_xlim3d.assert_not_called()
+
+            presenter._render_plot()  # same scale → full camera restore
+            ax3.view_init.assert_called_once_with(elev=60.0, azim=-45.0)
+            ax3.set_zlim3d.assert_called_once()

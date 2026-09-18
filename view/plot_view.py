@@ -308,6 +308,11 @@ def render_3d(
     level_val: int = 50,
     surface_style: str = "Solid",
     subdiv_level: int = 0,
+    normalized: bool = False,
+    pp_min: Optional[float] = None,
+    pp_max: Optional[float] = None,
+    tg_min: Optional[float] = None,
+    tg_max: Optional[float] = None,
 ) -> tuple[Figure, Any]:
     """
     Build and return a (Figure, Axes3D) pair for the 3-D surface plot.
@@ -316,7 +321,15 @@ def render_3d(
     ----------
     points_pp / points_tg:
         Lists of (x, y, z, err) tuples — already filtered and optionally
-        normalized by the Model.
+        normalized by the Model. With *normalized* set, both series are
+        independently stretched to the full height and share the same
+        volume, so they overlap by design; use z_label_mode "pp"/"tg" to
+        read the Z axis in absolute units of one series (via the
+        *pp_min*/*pp_max*/*tg_min*/*tg_max* statistics).
+    normalized:
+        Whether the Z values were normalized per series.
+    pp_min / pp_max / tg_min / tg_max:
+        Pre-normalization Z statistics used for absolute Z tick labels.
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -433,6 +446,9 @@ def render_3d(
     )
 
     _set_z_label(ax, z_label_mode, pp_color, tg_color)
+    if normalized and z_label_mode in ("pp", "tg"):
+        lo, hi = (pp_min, pp_max) if z_label_mode == "pp" else (tg_min, tg_max)
+        _set_series_zticks(ax, lo, hi)
 
     # Legend
     handles = []
@@ -487,6 +503,28 @@ def _draw_trisurf(ax, tri_r, z_r, x_arr, y_arr, color, cmap,
             ax.plot_trisurf(x_arr, y_arr, z_arr, cmap=cmap, alpha=0.85,
                             shade=True, lightsource=light,
                             edgecolor=edge_c, linewidth=lw, antialiased=True)
+
+
+def _set_series_zticks(ax, lo: Optional[float], hi: Optional[float]) -> None:
+    """
+    Relabel the Z ticks in absolute units of one normalized series.
+
+    With normalized data every series spans the full [0, 1] height, so
+    the raw tick positions are meaningless on their own. The ticks stay
+    at their normalized positions but are labeled with the absolute
+    values of the selected series (min + t * (max - min)). Does nothing
+    when the statistics are missing.
+    """
+    if lo is None or hi is None:
+        return
+    if hi == lo:
+        # Constant series: a single tick at the level, not six copies.
+        ax.set_zticks([1.0])
+        ax.set_zticklabels([f"{hi:.4g}"])
+        return
+    ticks = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    ax.set_zticks(ticks)
+    ax.set_zticklabels([f"{lo + t * (hi - lo):.4g}" for t in ticks])
 
 
 def _set_z_label(ax, mode: str, pp_color: str, tg_color: str) -> None:

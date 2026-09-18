@@ -14,6 +14,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 from view.plot_view import (
     _draw_unified,
+    _set_series_zticks,
     _set_z_label,
     render_2d,
     render_3d,
@@ -61,6 +62,38 @@ class TestSetZLabel:
         _set_z_label(ax, "nonexistent", "#ff0000", "#00ff00")
         # Falls back to default
         assert ax.get_zlabel()
+
+
+# ── _set_series_zticks ─────────────────────────────────────────────────────
+
+
+class TestSetSeriesZTicks:
+    """Absolute Z tick labels for stretched per-series data."""
+
+    def test_labels_span_min_to_max(self):
+        _, ax = _fig_ax_3d()
+        _set_series_zticks(ax, 20.0, 120.0)
+        assert [t.get_text() for t in ax.get_zticklabels()] == \
+            ["20", "40", "60", "80", "100", "120"]
+
+    def test_fractional_labels(self):
+        _, ax = _fig_ax_3d()
+        _set_series_zticks(ax, 1.0, 2.0)
+        assert [t.get_text() for t in ax.get_zticklabels()] == \
+            ["1", "1.2", "1.4", "1.6", "1.8", "2"]
+
+    def test_missing_stats_untouched(self):
+        _, ax = _fig_ax_3d()
+        before = [t.get_text() for t in ax.get_zticklabels()]
+        _set_series_zticks(ax, 20.0, None)
+        assert [t.get_text() for t in ax.get_zticklabels()] == before
+        _set_series_zticks(ax, None, None)
+        assert [t.get_text() for t in ax.get_zticklabels()] == before
+
+    def test_constant_series_single_tick(self):
+        _, ax = _fig_ax_3d()
+        _set_series_zticks(ax, 85.3, 85.3)
+        assert [t.get_text() for t in ax.get_zticklabels()] == ["85.3"]
 
 
 # ── render_2d ────────────────────────────────────────────────────────────────

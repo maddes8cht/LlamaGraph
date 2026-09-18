@@ -351,12 +351,17 @@ class BenchmarkModel:
         show_tg: bool,
         normalize: bool,
         scale_pct: bool,
-    ) -> tuple[list[tuple], list[tuple]]:
+    ) -> tuple[list[tuple], list[tuple], dict]:
         """
         Build raw (x, y, z, err) point lists for the 3-D plot engine.
 
-        Returns (points_pp, points_tg) where each element is a 4-tuple
-        (x_val, y_val, z_val, z_err).
+        Returns (points_pp, points_tg, stats) where each point is a
+        4-tuple (x_val, y_val, z_val, z_err) and stats holds the
+        pre-normalization Z minima/maxima per series:
+        {'pp_min', 'pp_max', 'tg_min', 'tg_max'} (None when a series
+        is empty). With *normalize* set, each series is independently
+        min-max stretched to the full range, so both series fill the
+        whole plot height — the same profile each shows on its own.
 
         String-valued dimensions are encoded to sequential integers;
         call get_dim_labels() to retrieve the label mapping.
@@ -400,12 +405,23 @@ class BenchmarkModel:
                 elif row['type'] == 'tg' and show_tg:
                     points_tg.append(pt)
 
-        # Global normalization across all points
+        # Pre-normalization minima/maxima per series, so the view can
+        # label the Z axis in absolute units even though both series
+        # share the stretched [0, 1] (or [0, 100]) volume when normalized.
+        stats = {
+            'pp_min': min((p[2] for p in points_pp), default=None),
+            'pp_max': max((p[2] for p in points_pp), default=None),
+            'tg_min': min((p[2] for p in points_tg), default=None),
+            'tg_max': max((p[2] for p in points_tg), default=None),
+        }
+
+        # Independent per-series min-max stretch (each series fills the
+        # full height); on the shared Z axis both therefore span [0, 1].
         if normalize:
             points_pp = _normalize_3d_points(points_pp, scale_pct)
             points_tg = _normalize_3d_points(points_tg, scale_pct)
 
-        return points_pp, points_tg
+        return points_pp, points_tg, stats
 
     def _cat_encode(self, val, dim: str) -> float:
         """Map a string value to a sequential float code for the given dimension."""
@@ -478,10 +494,28 @@ def _normalize_agg(points: list[dict], scale_pct: bool) -> list[dict]:
 def _normalize_3d_points(
     points: list[tuple], scale_pct: bool
 ) -> list[tuple]:
-    """Normalize the z component of a list of (x, y, z, err) tuples."""
+    """
+    Stretch the z component of (x, y, z, err) tuples to the full range.
+
+    Each series is min-max scaled to [0, 1] (or [0, 100] when *scale_pct*
+    is True), so every visible series fills the whole plot height — the
+    same profile Matplotlib's autoscaling shows for a lone series.
+    Errors are scaled by the same span. A constant series maps to the
+    top (1.0); an empty list stays empty.
+    """
     if not points:
         return points
     z_vals = [p[2] for p in points]
-    e_vals = [p[3] for p in points]
-    nz, ne, _ = normalize_series(z_vals, e_vals, scale_pct)
-    return [(p[0], p[1], nz[i], ne[i]) for i, p in enumerate(points)]
+    z_min, z_max = min(z_vals), max(z_vals)
+    span = z_max - z_min
+    factor = 100.0 if scale_pct else 1.0
+    if span == 0:
+        # Constant series: pin to the top, keep errors relative to the
+        # level (same convention as max-normalization) instead of dropping
+        # them.
+        base = z_max if z_max != 0 else 1.0
+        return [(p[0], p[1], factor, p[3] / base * factor) for p in points]
+    return [
+        (p[0], p[1], (p[2] - z_min) / span * factor, p[3] / span * factor)
+        for p in points
+    ]
