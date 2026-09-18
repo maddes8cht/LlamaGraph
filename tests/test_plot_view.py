@@ -498,143 +498,197 @@ class TestRender3D:
         assert len(surf) >= 1
 
 
-# ── _draw_trisurf (via render_3d) ────────────────────────────────────────────
+# ── Merged 3-D surfaces ────────────────────────────────────────────────────
 
 
-class TestDrawTrisurf:
-    """Tests for _draw_trisurf surface style dispatch (tested via render_3d)."""
+class TestTriangulateSeries:
+    """Tests for _triangulate_series (pure helper, no axes required)."""
 
-    def test_solid_style(self):
-        """Solid surface style produces a Poly3DCollection."""
-        pts = [(1.0, 2.0, 100.0, 5.0),
-               (2.0, 3.0, 110.0, 5.0),
-               (1.0, 3.0, 95.0, 5.0)]
+    def test_valid_points_triangulated(self):
+        from view.plot_view import _triangulate_series
+        tri = _triangulate_series(
+            [1.0, 2.0, 1.0, 2.0], [2.0, 3.0, 3.0, 2.5],
+            [100.0, 110.0, 95.0, 105.0], 0,
+        )
+        assert tri is not None
+        triangles, x, y, z = tri
+        assert triangles.shape[1] == 3
+        assert len(triangles) >= 1
+
+    def test_fewer_than_three_points_returns_none(self):
+        from view.plot_view import _triangulate_series
+        assert _triangulate_series([1.0], [2.0], [3.0], 0) is None
+        assert _triangulate_series([1.0, 2.0], [2.0, 3.0], [3.0, 4.0], 0) is None
+
+    def test_degenerate_points_return_none(self):
+        """Collinear points cannot be triangulated (no crash)."""
+        from view.plot_view import _triangulate_series
+        assert _triangulate_series(
+            [0.0, 1.0, 2.0], [0.0, 1.0, 2.0], [5.0, 5.0, 5.0], 0,
+        ) is None
+
+    def test_subdiv_refinement_increases_triangles(self):
+        from view.plot_view import _triangulate_series
+        xs = [1.0, 2.0, 1.0, 2.0]
+        ys = [2.0, 3.0, 3.0, 2.5]
+        zs = [100.0, 110.0, 95.0, 105.0]
+        plain = _triangulate_series(xs, ys, zs, 0)
+        refined = _triangulate_series(xs, ys, zs, 1)
+        assert plain is not None and refined is not None
+        assert len(refined[0]) > len(plain[0])
+
+
+class TestSeriesFaceColors:
+    """Tests for _series_face_colors (pure helper, no axes required)."""
+
+    def _setup(self):
+        from matplotlib.colors import LightSource, LinearSegmentedColormap
+        from view.plot_view import _triangulate_series
+        tri = _triangulate_series(
+            [1.0, 2.0, 1.0, 2.0], [2.0, 3.0, 3.0, 2.5],
+            [100.0, 110.0, 95.0, 105.0], 0,
+        )
+        light = LightSource(azdeg=315, altdeg=45)
+        cmap = LinearSegmentedColormap.from_list("t", ["#000000", "#ffffff"])
+        return tri, light, cmap
+
+    def test_solid_uses_base_color_with_alpha(self):
+        from view.plot_view import _series_face_colors
+        (triangles, x, y, z), light, cmap = self._setup()
+        verts, colors = _series_face_colors(
+            triangles, x, y, z, "#ff0000", cmap, "Solid", light)
+        assert verts.shape == (len(triangles), 3, 3)
+        assert colors.shape == (len(triangles), 4)
+        assert all(abs(c[0] - 1.0) < 1e-9 and c[1] == 0.0 and c[2] == 0.0
+                   for c in colors)
+        assert all(c[3] == pytest.approx(0.45) for c in colors)
+
+    def test_shaded_keeps_alpha_and_modulates(self):
+        from view.plot_view import _series_face_colors
+        (triangles, x, y, z), light, cmap = self._setup()
+        _, colors = _series_face_colors(
+            triangles, x, y, z, "#ff0000", cmap, "Shaded", light)
+        assert all(c[3] == pytest.approx(0.8) for c in colors)
+        assert all(0.0 <= c[0] <= 1.0 for c in colors)
+
+    def test_colormap_maps_own_z_range(self):
+        from view.plot_view import _series_face_colors
+        (triangles, x, y, z), light, cmap = self._setup()
+        _, colors = _series_face_colors(
+            triangles, x, y, z, "#ff0000", cmap, "Colormap", light)
+        assert all(c[3] == pytest.approx(0.85) for c in colors)
+        # Darkest face (lowest z) differs from brightest face
+        assert any((colors[0] != c).any() for c in colors[1:])
+
+
+class TestDrawMergedSurfaces:
+    """Tests for _draw_merged_surfaces (mock axes, no 3-D required)."""
+
+    def _surfaces(self):
+        from matplotlib.colors import LightSource, LinearSegmentedColormap
+        from view.plot_view import _series_face_colors, _triangulate_series
+        tri = _triangulate_series(
+            [1.0, 2.0, 1.0, 2.0], [2.0, 3.0, 3.0, 2.5],
+            [100.0, 110.0, 95.0, 105.0], 0,
+        )
+        light = LightSource(azdeg=315, altdeg=45)
+        cmap = LinearSegmentedColormap.from_list("t", ["#000000", "#ffffff"])
+        s1 = _series_face_colors(*tri, "#ff0000", cmap, "Solid", light)
+        s2 = _series_face_colors(*tri, "#00ff00", cmap, "Solid", light)
+        return s1, s2
+
+    def test_both_series_in_single_collection(self):
+        """PP + TG triangles land in ONE jointly sorted collection."""
+        from view.plot_view import _draw_merged_surfaces, art3d
+        s1, s2 = self._surfaces()
+        mock_ax = MagicMock()
+        seen: dict = {}
+        RealColl = art3d.Poly3DCollection
+
+        def spy(verts, **kwargs):
+            seen['verts'] = np.asarray(verts)
+            seen['colors'] = np.asarray(kwargs.get('facecolors'))
+            seen['zsort'] = kwargs.get('zsort')
+            return RealColl(verts, **kwargs)
+
+        with patch('view.plot_view.art3d.Poly3DCollection', side_effect=spy):
+            _draw_merged_surfaces(mock_ax, [s1, s2], 'none', 0)
+        mock_ax.add_collection3d.assert_called_once()
+        n_total = len(s1[0]) + len(s2[0])
+        assert seen['verts'].shape[0] == n_total
+        assert seen['colors'].shape == (n_total, 4)
+        assert seen['zsort'] == 'average'
+        # Per-series colors preserved: red PP faces, green TG faces
+        red = int((seen['colors'][:, 0] > 0.9).sum())
+        green = int((seen['colors'][:, 1] > 0.9).sum())
+        assert red == len(s1[0])
+        assert green == len(s2[0])
+
+    def test_empty_returns_none_without_drawing(self):
+        from view.plot_view import _draw_merged_surfaces
+        mock_ax = MagicMock()
+        assert _draw_merged_surfaces(mock_ax, [], 'none', 0) is None
+        mock_ax.add_collection3d.assert_not_called()
+
+
+class TestMergedSurfaceRender:
+    """render_3d emits exactly one surface collection for both series."""
+
+    def test_single_merged_collection_for_pp_and_tg(self):
+        """Overlapping PP/TG share one depth-sorted collection."""
+        pts_pp = [(1.0, 2.0, 100.0, 5.0),
+                  (2.0, 3.0, 110.0, 5.0),
+                  (1.0, 3.0, 95.0, 5.0)]
+        pts_tg = [(1.5, 2.5, 50.0, 2.0),
+                  (2.5, 3.5, 55.0, 2.0),
+                  (1.5, 3.5, 48.0, 2.0)]
         fig, ax = render_3d(
-            points_pp=pts,
-            points_tg=[],
+            points_pp=pts_pp,
+            points_tg=pts_tg,
             x_param="x", y_param="y",
             pp_color="#ff0000", tg_color="#00ff00",
             show_surface=True,
-            surface_style="Solid",
         )
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-        solid = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
-        assert len(solid) >= 1
+        surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
+        assert len(surf) == 1
 
-    def test_shaded_style(self):
-        """Shaded surface style."""
+    def test_surface_styles(self):
+        """Solid / Shaded / Colormap all produce the merged collection."""
         pts = [(1.0, 2.0, 100.0, 5.0),
                (2.0, 3.0, 110.0, 5.0),
                (1.0, 3.0, 95.0, 5.0)]
-        fig, ax = render_3d(
-            points_pp=pts,
-            points_tg=[],
-            x_param="x", y_param="y",
-            pp_color="#ff0000", tg_color="#00ff00",
-            show_surface=True,
-            surface_style="Shaded",
-        )
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-        shaded = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
-        assert len(shaded) >= 1
+        for style in ("Solid", "Shaded", "Colormap"):
+            fig, ax = render_3d(
+                points_pp=pts,
+                points_tg=[],
+                x_param="x", y_param="y",
+                pp_color="#ff0000", tg_color="#00ff00",
+                show_surface=True,
+                surface_style=style,
+            )
+            surf = [c for c in ax.collections
+                    if isinstance(c, Poly3DCollection)]
+            assert len(surf) == 1, style
 
-    def test_colormap_style(self):
-        """Colormap surface style."""
-        pts = [(1.0, 2.0, 100.0, 5.0),
-               (2.0, 3.0, 110.0, 5.0),
-               (1.0, 3.0, 95.0, 5.0)]
-        fig, ax = render_3d(
-            points_pp=pts,
-            points_tg=[],
-            x_param="x", y_param="y",
-            pp_color="#ff0000", tg_color="#00ff00",
-            show_surface=True,
-            surface_style="Colormap",
+    def test_wireframe_edges_passed_through(self):
+        """Edge color and width reach the merged collection."""
+        from matplotlib.colors import LightSource, LinearSegmentedColormap
+        from view.plot_view import (
+            _draw_merged_surfaces, _series_face_colors, _triangulate_series,
         )
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-        cmap_colls = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
-        assert len(cmap_colls) >= 1
-
-    def test_direct_dispatch_via_mock(self):
-        """Test _draw_trisurf direct dispatch using mocked ax."""
-        from view.plot_view import _draw_trisurf
-        mock_ax = MagicMock()
-        cmap_mock = MagicMock()
-        light_mock = MagicMock()
-
-        # Direct array path: Solid
-        _draw_trisurf(mock_ax, None, None, [1.0], [2.0], "#ff0000", cmap_mock,
-                      "Solid", light_mock, 'none', 0, z_arr=[10.0])
-        mock_ax.plot_trisurf.assert_called()
-        args, kwargs = mock_ax.plot_trisurf.call_args
-        assert kwargs.get('color') == "#ff0000"
-        assert kwargs.get('alpha') == 0.45
-
-        # Direct array path: Shaded
-        mock_ax.reset_mock()
-        _draw_trisurf(mock_ax, None, None, [1.0], [2.0], "#ff0000", cmap_mock,
-                      "Shaded", light_mock, 'none', 0, z_arr=[10.0])
-        args, kwargs = mock_ax.plot_trisurf.call_args
-        assert kwargs.get('shade') is True
-        assert kwargs.get('alpha') == 0.8
-
-        # Direct array path: Colormap
-        mock_ax.reset_mock()
-        _draw_trisurf(mock_ax, None, None, [1.0], [2.0], "#ff0000", cmap_mock,
-                      "Colormap", light_mock, 'none', 0, z_arr=[10.0])
-        args, kwargs = mock_ax.plot_trisurf.call_args
-        assert kwargs.get('cmap') == cmap_mock
-        assert kwargs.get('alpha') == 0.85
-
-    def test_refined_path_solid(self):
-        """Refined triangulation path (tri_r not None) with Solid style."""
-        from view.plot_view import _draw_trisurf
-        mock_ax = MagicMock()
-        tri_r = MagicMock()
-        z_r = MagicMock()
-        cmap_mock = MagicMock()
-        light_mock = MagicMock()
-
-        _draw_trisurf(mock_ax, tri_r, z_r, None, None, "#ff0000", cmap_mock,
-                      "Solid", light_mock, 'none', 0)
-        mock_ax.plot_trisurf.assert_called_once_with(
-            tri_r, z_r, color="#ff0000", alpha=0.45,
-            edgecolor='none', linewidth=0, antialiased=True,
+        tri = _triangulate_series(
+            [1.0, 2.0, 1.0, 2.0], [2.0, 3.0, 3.0, 2.5],
+            [100.0, 110.0, 95.0, 105.0], 0,
         )
-
-    def test_refined_path_shaded(self):
-        """Refined triangulation path with Shaded style."""
-        from view.plot_view import _draw_trisurf
+        light = LightSource(azdeg=315, altdeg=45)
+        cmap = LinearSegmentedColormap.from_list("t", ["#000000", "#ffffff"])
+        s1 = _series_face_colors(*tri, "#ff0000", cmap, "Solid", light)
         mock_ax = MagicMock()
-        tri_r = MagicMock()
-        z_r = MagicMock()
-        cmap_mock = MagicMock()
-        light_mock = MagicMock()
-
-        _draw_trisurf(mock_ax, tri_r, z_r, None, None, "#ff0000", cmap_mock,
-                      "Shaded", light_mock, 'none', 0)
-        mock_ax.plot_trisurf.assert_called_once_with(
-            tri_r, z_r, color="#ff0000", alpha=0.8,
-            shade=True, lightsource=light_mock,
-            edgecolor='none', linewidth=0, antialiased=True,
-        )
-
-    def test_refined_path_colormap(self):
-        """Refined triangulation path with Colormap style."""
-        from view.plot_view import _draw_trisurf
-        mock_ax = MagicMock()
-        tri_r = MagicMock()
-        z_r = MagicMock()
-        cmap_mock = MagicMock()
-        light_mock = MagicMock()
-
-        _draw_trisurf(mock_ax, tri_r, z_r, None, None, "#ff0000", cmap_mock,
-                      "Colormap", light_mock, 'none', 0)
-        mock_ax.plot_trisurf.assert_called_once_with(
-            tri_r, z_r, cmap=cmap_mock, alpha=0.85,
-            shade=True, lightsource=light_mock,
-            edgecolor='none', linewidth=0, antialiased=True,
-        )
+        coll = _draw_merged_surfaces(mock_ax, [s1], 'black', 0.5)
+        assert coll is not None
+        mock_ax.add_collection3d.assert_called_once_with(coll)
 
 
 # ── CustomNavigationToolbar ────────────────────────────────────────────
@@ -846,45 +900,41 @@ class TestPlotView:
 
 
 class TestRender3DFallback:
-    """Tests for render_3d surface fallback when Triangulation fails."""
+    """Degenerate geometry degrades to scatter points (no crash)."""
 
-    def test_fallback_uses_plot_trisurf_on_exception(self):
-        """When _draw_trisurf raises, fallback calls ax.plot_trisurf directly."""
-        with patch('view.plot_view._draw_trisurf',
-                   side_effect=RuntimeError("Triangulation failed")):
-            pts = [(1.0, 2.0, 100.0, 5.0),
-                   (2.0, 3.0, 110.0, 5.0),
-                   (1.0, 3.0, 95.0, 5.0)]
-            fig, ax = render_3d(
-                points_pp=pts, points_tg=[],
-                x_param="x", y_param="y",
-                pp_color="#ff0000", tg_color="#00ff00",
-                show_surface=True,
-            )
+    def test_collinear_points_draw_no_surface(self):
+        """Untriangulatable points render scatter only, no surface."""
+        pts = [(0.0, 0.0, 100.0, 5.0),
+               (1.0, 1.0, 110.0, 5.0),
+               (2.0, 2.0, 95.0, 5.0)]
+        fig, ax = render_3d(
+            points_pp=pts, points_tg=[],
+            x_param="x", y_param="y",
+            pp_color="#ff0000", tg_color="#00ff00",
+            show_surface=True,
+        )
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
-        assert len(surf) >= 1
+        assert len(surf) == 0
 
-    def test_fallback_with_subdiv_level(self):
-        """Fallback also works when subdiv_level > 0 raises."""
-        with patch('view.plot_view._draw_trisurf',
-                   side_effect=RuntimeError("Refinement failed")):
-            pts = [(1.0, 2.0, 100.0, 5.0),
-                   (2.0, 3.0, 110.0, 5.0),
-                   (1.0, 3.0, 95.0, 5.0)]
-            fig, ax = render_3d(
-                points_pp=pts, points_tg=[],
-                x_param="x", y_param="y",
-                pp_color="#ff0000", tg_color="#00ff00",
-                show_surface=True,
-                subdiv_level=1,
-            )
+    def test_collinear_points_with_subdiv_level(self):
+        """Degenerate points with subdiv_level > 0 behave the same."""
+        pts = [(0.0, 0.0, 100.0, 5.0),
+               (1.0, 1.0, 110.0, 5.0),
+               (2.0, 2.0, 95.0, 5.0)]
+        fig, ax = render_3d(
+            points_pp=pts, points_tg=[],
+            x_param="x", y_param="y",
+            pp_color="#ff0000", tg_color="#00ff00",
+            show_surface=True,
+            subdiv_level=1,
+        )
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
-        assert len(surf) >= 1
+        assert len(surf) == 0
 
     def test_no_fallback_needed_on_valid_data(self):
-        """Valid triangulation data does not trigger fallback."""
+        """Valid triangulation data produces exactly one surface."""
         pts = [(1.0, 2.0, 100.0, 5.0),
                (2.0, 3.0, 110.0, 5.0),
                (1.0, 3.0, 95.0, 5.0)]
@@ -896,10 +946,10 @@ class TestRender3DFallback:
         )
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
-        assert len(surf) >= 1
+        assert len(surf) == 1
 
     def test_refined_path_subdiv_1(self):
-        """subdiv_level=1 via render_3d produces surface."""
+        """subdiv_level=1 via render_3d produces one merged surface."""
         pts = [(1.0, 2.0, 100.0, 5.0),
                (2.0, 3.0, 110.0, 5.0),
                (1.0, 3.0, 95.0, 5.0),
@@ -913,7 +963,7 @@ class TestRender3DFallback:
         )
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
-        assert len(surf) >= 1
+        assert len(surf) == 1
 
     def test_no_surface_no_fallback(self):
         """show_surface=False → no surface attempt, no fallback needed."""

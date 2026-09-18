@@ -25,8 +25,9 @@ from tkinter import ttk
 import numpy as np
 import matplotlib.lines as mlines
 import matplotlib.tri as mtri
+from mpl_toolkits.mplot3d import art3d
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.colors import LightSource, LinearSegmentedColormap
+from matplotlib.colors import LightSource, LinearSegmentedColormap, to_rgba
 from matplotlib.figure import Figure
 
 from utils.colors import COLORS, get_variant_color, normalize_series
@@ -326,6 +327,9 @@ def render_3d(
         volume, so they overlap by design; use z_label_mode "pp"/"tg" to
         read the Z axis in absolute units of one series (via the
         *pp_min*/*pp_max*/*tg_min*/*tg_max* statistics).
+
+    Both surfaces are drawn as a single merged Poly3DCollection so
+    overlapping triangles are depth-sorted against each other.
     normalized:
         Whether the Z values were normalized per series.
     pp_min / pp_max / tg_min / tg_max:
@@ -353,6 +357,7 @@ def render_3d(
         "custom_tg", [COLORS['bg'], tg_color, "#ffffff"]
     )
     light = LightSource(azdeg=315, altdeg=45)
+    surfaces: list = []  # (verts, colors) per series, drawn merged below
 
     def plot_series(pts, color, label, marker, cmap):
         if not pts:
@@ -382,30 +387,17 @@ def render_3d(
                         color=color, alpha=1.0, linewidth=1.5,
                     )
 
-        # Surface / trisurf
+        # Surface triangulation — collected here, drawn once below as a
+        # single merged collection (see _draw_merged_surfaces).
         if show_surface and len(pts) >= 3:
-            edge_c = 'black' if show_wireframe else 'none'
-            lw = 0.5 if show_wireframe else 0
-            try:
-                x_arr = np.array(xs, dtype=float)
-                y_arr = np.array(ys, dtype=float)
-                z_arr = np.array(zs, dtype=float)
-
-                if subdiv_level > 0:
-                    tri = mtri.Triangulation(x_arr, y_arr)
-                    refiner = mtri.UniformTriRefiner(tri)
-                    tri_r, z_r = refiner.refine_field(z_arr, subdiv=subdiv_level)
-                    _draw_trisurf(ax, tri_r, z_r, None, None, color, cmap,
-                                  surface_style, light, edge_c, lw)
-                else:
-                    _draw_trisurf(ax, None, None, x_arr, y_arr, color, cmap,
-                                  surface_style, light, edge_c, lw,
-                                  z_arr=z_arr)
-            except Exception as exc:
-                print(f"[PlotView] Surface fallback: {exc}")
-                ax.plot_trisurf(
-                    np.array(xs), np.array(ys), np.array(zs),
-                    color=color, alpha=0.45, edgecolor=edge_c, linewidth=lw,
+            tri = _triangulate_series(xs, ys, zs, subdiv_level)
+            if tri is not None:
+                triangles, tx, ty, tz = tri
+                surfaces.append(
+                    _series_face_colors(
+                        triangles, tx, ty, tz,
+                        color, cmap, surface_style, light,
+                    )
                 )
 
         # Scatter points
@@ -423,6 +415,13 @@ def render_3d(
 
     plot_series(points_pp, pp_color, "PP", 'o', cmap_pp)
     plot_series(points_tg, tg_color, "TG", 's', cmap_tg)
+
+    # One joint surface collection so overlapping PP/TG triangles are
+    # depth-sorted against each other instead of one surface covering
+    # the other as a whole unit.
+    edge_c = 'black' if show_wireframe else 'none'
+    lw = 0.5 if show_wireframe else 0
+    _draw_merged_surfaces(ax, surfaces, edge_c, lw)
 
     # Level plane
     if show_level and all_zs:
@@ -474,35 +473,92 @@ def render_3d(
     return fig, ax
 
 
-def _draw_trisurf(ax, tri_r, z_r, x_arr, y_arr, color, cmap,
-                  style, light, edge_c, lw, z_arr=None):
-    """Dispatch helper for trisurf surface styles."""
-    if tri_r is not None:
-        # Refined triangulation path
-        if style == "Shaded":
-            ax.plot_trisurf(tri_r, z_r, color=color, alpha=0.8,
-                            shade=True, lightsource=light,
-                            edgecolor=edge_c, linewidth=lw, antialiased=True)
-        elif style == "Colormap":
-            ax.plot_trisurf(tri_r, z_r, cmap=cmap, alpha=0.85,
-                            shade=True, lightsource=light,
-                            edgecolor=edge_c, linewidth=lw, antialiased=True)
-        else:  # Solid
-            ax.plot_trisurf(tri_r, z_r, color=color, alpha=0.45,
-                            edgecolor=edge_c, linewidth=lw, antialiased=True)
-    else:
-        # Direct array path
-        if style == "Solid":
-            ax.plot_trisurf(x_arr, y_arr, z_arr, color=color, alpha=0.45,
-                            edgecolor=edge_c, linewidth=lw, antialiased=True)
-        elif style == "Shaded":
-            ax.plot_trisurf(x_arr, y_arr, z_arr, color=color, alpha=0.8,
-                            shade=True, lightsource=light,
-                            edgecolor=edge_c, linewidth=lw, antialiased=True)
-        elif style == "Colormap":
-            ax.plot_trisurf(x_arr, y_arr, z_arr, cmap=cmap, alpha=0.85,
-                            shade=True, lightsource=light,
-                            edgecolor=edge_c, linewidth=lw, antialiased=True)
+def _triangulate_series(xs, ys, zs, subdiv_level):
+    """
+    Delaunay-triangulate one series for the merged 3-D surface.
+
+    Returns (triangles, x, y, z) where triangles is an (n, 3) index
+    array into the coordinate arrays (refined when subdiv_level > 0),
+    or None when triangulation is impossible (fewer than 3 points or
+    degenerate geometry). Never raises — failures print a note and
+    yield None, leaving that series as scatter points only.
+    """
+    try:
+        x_arr = np.asarray(list(xs), dtype=float)
+        y_arr = np.asarray(list(ys), dtype=float)
+        z_arr = np.asarray(list(zs), dtype=float)
+    except (ValueError, TypeError) as exc:
+        print(f"[PlotView] Triangulation skipped: {exc}")
+        return None
+    if len(x_arr) < 3:
+        return None
+    try:
+        if subdiv_level > 0:
+            base = mtri.Triangulation(x_arr, y_arr)
+            refiner = mtri.UniformTriRefiner(base)
+            tri, z_ref = refiner.refine_field(z_arr, subdiv=subdiv_level)
+            return tri.triangles, tri.x, tri.y, np.asarray(z_ref, dtype=float)
+        tri = mtri.Triangulation(x_arr, y_arr)
+        return tri.triangles, x_arr, y_arr, z_arr
+    except Exception as exc:
+        print(f"[PlotView] Triangulation skipped: {exc}")
+        return None
+
+
+def _series_face_colors(triangles, x, y, z, color, cmap, style, light):
+    """
+    Per-face RGBA colors for one triangulated series.
+
+    Returns (verts, colors): verts is an (n, 3, 3) array of triangle
+    corners, colors an (n, 4) array. Solid uses the base color, Shaded
+    modulates it by face-normal lighting, Colormap maps the series' own
+    z range through *cmap*. Alphas match the former per-series surfaces
+    (0.45 / 0.8 / 0.85).
+    """
+    vx, vy, vz = x[triangles], y[triangles], z[triangles]
+    verts = np.stack([vx, vy, vz], axis=-1)
+    n = len(triangles)
+    if style == "Colormap":
+        zmin, zmax = float(np.min(z)), float(np.max(z))
+        span = zmax - zmin
+        t = np.full(n, 0.5) if span == 0 else (vz.mean(axis=1) - zmin) / span
+        colors = np.asarray(cmap(t), dtype=float).reshape(n, 4)
+        colors[:, 3] = 0.85
+        return verts, colors
+    base = np.array(to_rgba(color), dtype=float)[:3]
+    if style == "Shaded":
+        e1 = verts[:, 1] - verts[:, 0]
+        e2 = verts[:, 2] - verts[:, 0]
+        normals = np.cross(e1, e2)
+        norm = np.linalg.norm(normals, axis=1, keepdims=True)
+        norm[norm == 0] = 1.0
+        intensity = light.shade_normals(normals / norm, fraction=1.0)
+        shaded = np.clip(base[None, :] * intensity[:, None], 0.0, 1.0)
+        return verts, np.column_stack([shaded, np.full(n, 0.8)])
+    return verts, np.column_stack([np.tile(base, (n, 1)), np.full(n, 0.45)])
+
+
+def _draw_merged_surfaces(ax, surfaces, edge_c, lw):
+    """
+    Draw all series surfaces as ONE Poly3DCollection so Matplotlib's
+    painter algorithm depth-sorts every triangle jointly.
+
+    Separate collections are only sorted as whole units, which puts one
+    surface entirely above the other and flips that order while
+    rotating. Returns the collection, or None when there is nothing
+    to draw.
+    """
+    parts = [(v, c) for v, c in surfaces if v is not None and len(v)]
+    if not parts:
+        return None
+    verts = np.vstack([v for v, _ in parts])
+    colors = np.vstack([c for _, c in parts])
+    coll = art3d.Poly3DCollection(
+        verts, facecolors=colors,
+        edgecolors=edge_c, linewidths=lw, zsort='average',
+    )
+    ax.add_collection3d(coll)
+    return coll
 
 
 def _set_series_zticks(ax, lo: Optional[float], hi: Optional[float]) -> None:
