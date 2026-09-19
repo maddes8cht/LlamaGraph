@@ -1584,3 +1584,59 @@ def test_hide_tooltip_survives_dead_widget(tmp_path):
     dead = MagicMock()
     dead.destroy.side_effect = Exception("dead")
     presenter._hide_tooltip(dead)  # must not raise
+
+
+def test_on_pick_ignores_default_legend_label(tmp_path):
+    """Stray whisker picks show values with axis title, no _no_legend_."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d_x = "n_batch"
+
+    event = _mock_pick_event(label="_no_legend_")
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "_no_legend_" not in text
+        assert "N Batch:" in text
+
+
+def test_on_pick_uses_record_label(tmp_path):
+    """Record label wins: data lines stay at default _no_legend_."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d_x = "n_batch"
+
+    event = _mock_pick_event(label="_no_legend_")
+    event.artist._llama_records = [
+        {'x': 512.0, 'label': 'PP: bench',
+         'ts': 100.5, 'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "_no_legend_" not in text
+        assert text.splitlines()[0] == "PP: bench"
+
+
+def test_on_pick_record_without_label_shows_values_only(tmp_path):
+    """Label-less records never leak the artist default label."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d_x = "n_batch"
+
+    event = _mock_pick_event(label="_no_legend_")
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "_no_legend_" not in text
+        assert text.splitlines()[0] == "N Batch: 512"

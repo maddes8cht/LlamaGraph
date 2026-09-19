@@ -667,6 +667,8 @@ class PlotterPresenter:
             tg_max=stats['tg_max'],
             x_ticks=x_ticks,
             y_ticks=y_ticks,
+            infos_pp=infos['pp'],
+            infos_tg=infos['tg'],
         )
 
         self._current_3d_ax = ax
@@ -782,20 +784,30 @@ class PlotterPresenter:
 
         if isinstance(records, list) and 0 <= ind < len(records):
             rec = records[ind]
+            # Series label rides in the record: errorbar() keeps it on
+            # the container (for the legend) while the pickable data
+            # line itself stays at the default "_no_legend_".
+            first = rec.get('label') or label
+            if not isinstance(first, str) or first.startswith("_"):
+                first = None
             x_title = (self._last_2d_x or 'x').replace('_', ' ').title()
-            lines = [label,
-                     f"{x_title}: {self._fmt_axis_value(rec.get('x'))}"]
+            lines = ([first] if first else []) + \
+                [f"{x_title}: {self._fmt_axis_value(rec.get('x'))}"]
             lines.extend(self._metric_lines(rec))
-            if "Unified" in label:
+            if first is not None and "Unified" in first:
                 lines.append("🔗 Combined")
             self._show_tooltip("\n".join(lines))
             return
 
-        # Fallback for artists without attached records
+        # Fallback for artists without attached records (e.g. a stray
+        # whisker pick): unnamed artists show values without a label line.
         xdata = event.artist.get_xdata()
         ydata = event.artist.get_ydata()
-        txt = f"{label}\nX: {xdata[ind]}\nY: {ydata[ind]:.2f}"
-        if "Unified" in label:
+        x_title = (self._last_2d_x or 'x').replace('_', ' ').title()
+        txt = f"{x_title}: {xdata[ind]}\nY: {ydata[ind]:.2f}"
+        if isinstance(label, str) and label and not label.startswith("_"):
+            txt = f"{label}\n" + txt
+        if isinstance(label, str) and "Unified" in label:
             txt += "\n🔗 Combined"
         self._show_tooltip(txt)
 
@@ -805,13 +817,17 @@ class PlotterPresenter:
             return
         ind = event.ind[0]
         label = event.artist.get_label()
-        series = 'pp' if label == 'PP' else 'tg' if label == 'TG' else None
-        if series is None:
+        if label not in ("PP", "TG"):
             return
-        infos = self._last_3d.get('infos', {}).get(series)
-        if not isinstance(infos, list) or not (0 <= ind < len(infos)):
-            return
-        info = infos[ind]
+        records = getattr(event.artist, '_llama_records', None)
+        if isinstance(records, list) and 0 <= ind < len(records):
+            info = records[ind]
+        else:
+            infos = self._last_3d.get('infos', {}).get(
+                'pp' if label == 'PP' else 'tg')
+            if not isinstance(infos, list) or not (0 <= ind < len(infos)):
+                return
+            info = infos[ind]
         x_title = (self._last_3d.get('x_param') or 'x').replace('_', ' ').title()
         y_title = (self._last_3d.get('y_param') or 'y').replace('_', ' ').title()
         lines = [label,
