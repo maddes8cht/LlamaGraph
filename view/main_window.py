@@ -28,6 +28,11 @@ from view.left_sidebar import LeftSidebar
 from view.right_sidebar import RightSidebar
 from view.plot_view import PlotView
 
+#: Base OS window title; the current graph title is appended by
+#: set_graph_title() (the figures themselves carry no title so the
+#: freed margins belong to the plot).
+WINDOW_TITLE_BASE = "llamagraph — llama-bench Visualizer"
+
 
 class MainWindow:
     """
@@ -65,6 +70,7 @@ class MainWindow:
         self._show_wireframe_var = tk.IntVar(value=0)
         self._show_projections_var = tk.IntVar(value=0)
         self._show_errors_3d = tk.IntVar(value=1)
+        self._dolly_var = tk.IntVar(value=1)
         self._z_label_mode = tk.StringVar(value="both-norm")
         self._show_level_var = tk.IntVar(value=0)
         self._level_val_var = tk.IntVar(value=50)
@@ -81,7 +87,7 @@ class MainWindow:
     # ── Root window setup ─────────────────────────────────────────────────────
 
     def _configure_root(self) -> None:
-        self._root.title("llamagraph — llama-bench Visualizer")
+        self._root.title(WINDOW_TITLE_BASE)
         self._root.geometry("1680x900")
         self._root.configure(bg=COLORS['bg'])
         self._root.minsize(1200, 650)
@@ -255,6 +261,14 @@ class MainWindow:
         chk(" Err", self._show_errors_3d, '#f44747').pack(side=tk.LEFT, padx=2)
         chk(" Proj", self._show_projections_var, '#569cd6').pack(side=tk.LEFT, padx=2)
 
+        tk.Checkbutton(
+            bar, text=" Dolly", variable=self._dolly_var,
+            command=self._on_toggle_dolly,
+            bg=COLORS['bg'], fg='#b5cea8',
+            selectcolor=COLORS['checkbox_active'],
+            font=('Segoe UI', 9),
+        ).pack(side=tk.LEFT, padx=2)
+
         # Store controls that need state management
         self._3d_controls = [
             self._cb_x, self._cb_y, self._cb_z,
@@ -269,6 +283,10 @@ class MainWindow:
     def _on_toggle_3d(self) -> None:
         if self._toggle_3d_cb:
             self._toggle_3d_cb()
+
+    def _on_toggle_dolly(self) -> None:
+        if self._toggle_dolly_cb:
+            self._toggle_dolly_cb()
 
     def _on_level_step(self, delta: int) -> None:
         """Nudge the level value by *delta* (±1 via the arrow buttons)."""
@@ -310,12 +328,16 @@ class MainWindow:
     # Presenter injects these
     _render_cb: Optional[Callable] = None
     _toggle_3d_cb: Optional[Callable] = None
+    _toggle_dolly_cb: Optional[Callable] = None
 
     def set_render_callback(self, cb: Callable) -> None:
         self._render_cb = cb
 
     def set_toggle_3d_callback(self, cb: Callable) -> None:
         self._toggle_3d_cb = cb
+
+    def set_toggle_dolly_callback(self, cb: Callable) -> None:
+        self._toggle_dolly_cb = cb
 
     def set_toggle_metric_callback(self, cb: Callable) -> None:
         self._toggle_btn.config(command=cb)
@@ -356,6 +378,19 @@ class MainWindow:
     def set_metric_button_text(self, text: str) -> None:
         self._toggle_btn.config(text=text)
 
+    def set_graph_title(self, graph_title: str = "") -> None:
+        """
+        Append the current graph title to the OS window title.
+
+        The figures carry no in-plot title (their margin belongs to the
+        plot); an empty *graph_title* resets to the bare base title
+        (e.g. with no data loaded).
+        """
+        if graph_title:
+            self._root.title(f"{WINDOW_TITLE_BASE} — {graph_title}")
+        else:
+            self._root.title(WINDOW_TITLE_BASE)
+
     # ── Property accessors (read by Presenter) ────────────────────────────────
 
     @property
@@ -393,6 +428,10 @@ class MainWindow:
     @property
     def show_errors_3d(self) -> bool:
         return bool(self._show_errors_3d.get())
+
+    @property
+    def dolly(self) -> bool:
+        return bool(self._dolly_var.get())
 
     @property
     def z_label_mode(self) -> str:

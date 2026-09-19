@@ -26,7 +26,11 @@ from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
 from view.plot_view import (
     average_bucket,
+    build_2d_title,
+    build_3d_title,
     interp_surface_z,
+    set_dolly_mode,
+    snap_roll_zero,
     thin_value_ticks,
     render_2d,
     render_3d,
@@ -142,6 +146,7 @@ class PlotterPresenter:
         # Main window toolbar callbacks
         win.set_render_callback(self._render_plot)
         win.set_toggle_3d_callback(self._on_toggle_3d)
+        win.set_toggle_dolly_callback(self._on_toggle_dolly)
         win.set_toggle_metric_callback(self.toggle_metric)
 
         # Plot view home-button override
@@ -181,6 +186,7 @@ class PlotterPresenter:
         self._current_selection = []
         self._selected_paths = []
         self._model.clear()
+        self._win.set_graph_title("")
         self._win.left_sidebar.update_series_toggles([])
         self._win.plot_view.show_placeholder(
             "📊 Select CSV/MD file(s) with Ctrl+Click to display"
@@ -460,6 +466,20 @@ class PlotterPresenter:
         self._update_right_sidebar()
         self._render_plot()
 
+    def _on_toggle_dolly(self) -> None:
+        """
+        Called when the user clicks the Dolly checkbox.
+
+        Switching the rotation style is instant (read per drag), so no
+        figure rebuild is needed: apply the style and, when enabling,
+        snap a possibly rolled camera back to Z-up with a redraw.
+        """
+        set_dolly_mode(self._win.dolly)
+        if self._win.dolly and self._win.mode_3d \
+                and self._current_3d_ax is not None:
+            if snap_roll_zero(self._current_3d_ax):
+                self._win.plot_view.redraw_idle()
+
     # ── Metric toggle (t/s vs ns) ─────────────────────────────────────────────
 
     def toggle_metric(self) -> None:
@@ -516,6 +536,8 @@ class PlotterPresenter:
         """
         if self._win.mode_3d and self._current_3d_ax and self._home_cam_3d:
             self._restore_camera(self._current_3d_ax, self._home_cam_3d)
+            if self._win.dolly:
+                snap_roll_zero(self._current_3d_ax)
             self._win.plot_view.redraw_idle()
             return True
         return False
@@ -528,6 +550,7 @@ class PlotterPresenter:
         Called whenever any control changes.
         """
         if not self._model.has_data():
+            self._win.set_graph_title("")
             self._win.plot_view.show_placeholder(
                 "📊 Select CSV/MD file(s) with Ctrl+Click to display"
             )
@@ -553,6 +576,7 @@ class PlotterPresenter:
         show_pp: bool, show_tg: bool
     ) -> None:
         if not x_param:
+            self._win.set_graph_title("")
             self._win.plot_view.show_placeholder("⚠ No parameter axis available.")
             return
 
@@ -593,6 +617,8 @@ class PlotterPresenter:
         )
 
         self._current_3d_ax = None
+        self._win.set_graph_title(
+            build_2d_title(x_param, self._win.unify, normalize))
         self._win.plot_view.render(fig, ax3d=None, on_pick_cb=self._on_pick)
 
     def _render_3d(
@@ -601,10 +627,15 @@ class PlotterPresenter:
     ) -> None:
         y_param = self._win.axis_y
         if not x_param or not y_param or x_param == y_param:
+            self._win.set_graph_title("")
             self._win.plot_view.show_placeholder(
                 "⚠ Select two different axes for 3D plot."
             )
             return
+
+        # Rotation style follows the Dolly checkbox (instant per drag,
+        # no scale effect, so it stays out of the signature below).
+        set_dolly_mode(self._win.dolly)
 
         # Detect scale-relevant changes — a new axis combo, metric,
         # normalization, series visibility, interpolation, or gap mask
@@ -684,6 +715,7 @@ class PlotterPresenter:
         self._last_3d = {'infos': infos, 'x_param': x_param, 'y_param': y_param,
                          'points': {'pp': points_pp, 'tg': points_tg}}
         self._connector_line = None  # new canvas drops the old connector
+        self._win.set_graph_title(build_3d_title(x_param, y_param))
         self._win.plot_view.render(fig, ax3d=ax, on_pick_cb=self._on_pick_3d)
 
         # Apply categorical tick labels if dimensions are string-valued
@@ -699,12 +731,19 @@ class PlotterPresenter:
             self._home_cam_3d = self._save_camera(ax)
 
         # Restore the user's last camera position (angle only when the
-        # data scale changed, full camera otherwise)
+        # data scale changed, full camera otherwise). Dolly mode never
+        # shows a rolled view: a restored free-mode camera snaps back to
+        # Z-up (roll-only change, limits kept). One coalesced redraw.
+        redraw = False
         if saved_cam is not None:
             if scale_changed:
                 self._restore_rotation(ax, saved_cam)
             else:
                 self._restore_camera(ax, saved_cam)
+            redraw = True
+        if self._win.dolly and snap_roll_zero(ax):
+            redraw = True
+        if redraw:
             self._win.plot_view.redraw_idle()
 
     # ── Pick events (2-D/3-D tooltips) ─────────────────────────────────────

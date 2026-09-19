@@ -160,6 +160,7 @@ class MockMainWindow:
         self._show_wireframe = 0
         self._show_projections = 0
         self._show_errors_3d = 1
+        self._dolly = 1
         self._z_label_mode = "both-norm"
         self._show_level = 0
         self._level_val = 50
@@ -174,6 +175,7 @@ class MockMainWindow:
         self.last_unify_state = None
         self.last_metric_text = None
         self.last_key_bindings = None
+        self.last_graph_title = None
 
     # Properties matching MainWindow interface
     @property
@@ -211,6 +213,10 @@ class MockMainWindow:
     @property
     def show_errors_3d(self) -> bool:
         return bool(self._show_errors_3d)
+
+    @property
+    def dolly(self) -> bool:
+        return bool(self._dolly)
 
     @property
     def z_label_mode(self) -> str:
@@ -259,6 +265,9 @@ class MockMainWindow:
     def set_toggle_3d_callback(self, cb):
         self._toggle_3d_cb = cb
 
+    def set_toggle_dolly_callback(self, cb):
+        self._toggle_dolly_cb = cb
+
     def set_toggle_metric_callback(self, cb):
         self._metric_cb = cb
 
@@ -273,6 +282,9 @@ class MockMainWindow:
 
     def set_metric_button_text(self, text: str):
         self.last_metric_text = text
+
+    def set_graph_title(self, title: str = ""):
+        self.last_graph_title = title
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────
@@ -839,6 +851,94 @@ def test_toggle_metric_with_data(tmp_path):
     assert presenter._model.has_data()
     presenter.toggle_metric()
     assert presenter._show_ts is False
+
+
+def test_graph_title_wired_to_window(tmp_path):
+    """2D/3D renders set the window title; empty selection resets it."""
+    csv1 = create_bench_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._available_csvs = [csv1]
+    window._axis_x = "params"
+    presenter._on_file_select([0])
+
+    assert window.last_graph_title, "2D render must set a window title"
+    assert "Comparison" in window.last_graph_title
+
+    window._mode_3d = 1
+    window._axis_x = "params"
+    window._axis_y = "n_gpu_layers"
+    presenter._render_plot()
+
+    assert "3D Parameter Space" in window.last_graph_title
+
+    presenter._on_file_select([])
+    assert window.last_graph_title == ""
+
+    # Clearing loaded data (e.g. directory change) resets the title too,
+    # even though that path shows a placeholder without re-rendering.
+    window._axis_x = "params"
+    presenter._on_file_select([0])
+    assert window.last_graph_title != ""
+    presenter._clear_loaded_data()
+    assert window.last_graph_title == ""
+
+
+def test_dolly_toggle_snaps_roll(tmp_path):
+    """Dolly on → azel style + rolled camera snapped to Z-up with redraw."""
+    import matplotlib as mpl
+    from unittest.mock import MagicMock
+    prev = mpl.rcParams['axes3d.mouserotationstyle']
+    try:
+        window = MockMainWindow()
+        presenter = PlotterPresenter(window, tmp_path)
+        window._mode_3d = 1
+        mock_ax = MagicMock()
+        mock_ax.roll = 12.0
+        presenter._current_3d_ax = mock_ax
+
+        window._dolly = 1
+        presenter._on_toggle_dolly()
+        assert mpl.rcParams['axes3d.mouserotationstyle'] == 'azel'
+        assert mock_ax.roll == 0.0
+        assert window.plot_view.redraw_count >= 1
+
+        window._dolly = 0
+        mock_ax.roll = 7.0
+        before = window.plot_view.redraw_count
+        presenter._on_toggle_dolly()
+        assert mpl.rcParams['axes3d.mouserotationstyle'] == 'arcball'
+        assert mock_ax.roll == 7.0  # free mode leaves roll alone
+        assert window.plot_view.redraw_count == before
+    finally:
+        mpl.rcParams['axes3d.mouserotationstyle'] = prev
+
+
+def test_render_3d_applies_dolly_style(tmp_path):
+    """3D render applies the rotation style from the Dolly checkbox."""
+    import matplotlib as mpl
+    from unittest.mock import MagicMock, patch
+    prev = mpl.rcParams['axes3d.mouserotationstyle']
+    try:
+        csv1 = create_bench_csv(tmp_path / "bench.csv")
+        window = MockMainWindow()
+        presenter = PlotterPresenter(window, tmp_path)
+        presenter._available_csvs = [csv1]
+        window._axis_x = "params"
+        presenter._on_file_select([0])
+        window._mode_3d = 1
+        window._axis_x = "params"
+        window._axis_y = "n_gpu_layers"
+
+        window._dolly = 0
+        with patch('presenter.plotter_presenter.render_3d',
+                   return_value=(MagicMock(), MagicMock())):
+            with patch.object(window.plot_view, 'render'):
+                presenter._render_plot()
+        assert mpl.rcParams['axes3d.mouserotationstyle'] == 'arcball'
+    finally:
+        mpl.rcParams['axes3d.mouserotationstyle'] = prev
 
 
 def test_on_file_select_with_errors(tmp_path):

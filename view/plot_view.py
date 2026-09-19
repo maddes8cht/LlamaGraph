@@ -46,6 +46,49 @@ class CustomNavigationToolbar(NavigationToolbar2Tk):
     def __init__(self, canvas, parent, home_callback: Optional[Callable] = None):
         self._home_callback = home_callback
         super().__init__(canvas, parent, pack_toolbar=False)
+        self._style_dark_vertical()
+
+    def _style_dark_vertical(self) -> None:
+        """
+        Dark anthracite icon bar, arranged vertically on the left.
+
+        Matches the app's dark theme (the default light-gray bar is a
+        foreign body). Matplotlib recolors the PNG icons to the button
+        foreground on dark backgrounds by itself, so _set_image_for_button
+        is re-run after the colors change. The coordinate readout and the
+        filler label have no room in a slim bar and are hidden (the message
+        StringVar keeps updating harmlessly). Best effort — never raises.
+        """
+        try:
+            self.configure(bg=COLORS['panel_bg'])
+            # Let the bar size itself to the icon column (~30 px wide);
+            # a fixed width would fight pack_propagate below.
+            self.pack_propagate(True)
+            for child in self.winfo_children():
+                cls = child.winfo_class()
+                if cls in ('Button', 'Checkbutton'):
+                    child.configure(
+                        bg=COLORS['panel_bg'], fg=COLORS['fg'],
+                        activebackground=COLORS['accent'],
+                        activeforeground='white',
+                        relief='flat', borderwidth=0,
+                        highlightthickness=0,
+                    )
+                    if cls == 'Checkbutton':
+                        child.configure(selectcolor=COLORS['accent'])
+                    if getattr(child, '_image_file', None) is not None:
+                        NavigationToolbar2Tk._set_image_for_button(
+                            self, child)
+                    child.pack_configure(side=tk.TOP, padx=2, pady=2)
+                elif cls == 'Frame':
+                    # Spacer → horizontal divider line.
+                    child.configure(bg=COLORS['separator'], height=2)
+                    child.pack_configure(
+                        side=tk.TOP, fill=tk.X, padx=4, pady=4)
+                elif cls == 'Label':
+                    child.pack_forget()
+        except Exception:
+            pass
 
     def home(self, *args):
         if self._home_callback and self._home_callback():
@@ -135,7 +178,7 @@ class PlotView(tk.Frame):
             home_callback=self._home_cb,
         )
         self._toolbar.update()
-        self._toolbar.pack(side=tk.TOP, fill=tk.X)
+        self._toolbar.pack(side=tk.LEFT, fill=tk.Y)
         self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         self._pick_cb = on_pick_cb
@@ -253,6 +296,17 @@ class PlotView(tk.Frame):
 
 # ── 2-D Rendering ─────────────────────────────────────────────────────────────
 
+def build_2d_title(x_param: str, do_unify: bool, normalize: bool) -> str:
+    """
+    Window title for the 2-D comparison view.
+
+    Shown in the OS window title (see MainWindow.set_graph_title), not in
+    the figure — the freed top margin goes to the plot instead.
+    """
+    norm_suffix = " (Normalized)" if normalize else ""
+    return ("🔗 Unified " if do_unify else "📊 Multi-File ") + \
+        f"Comparison | X: {x_param.replace('_', ' ').title()}{norm_suffix}"
+
 def render_2d(
     datasets_raw: list[dict],
     series_data: dict,          # from Model.get_2d_series()
@@ -281,10 +335,9 @@ def render_2d(
     ax.set_facecolor(bg)
     ax.grid(True, linestyle='--', alpha=0.2, color=COLORS['fg'])
 
-    norm_suffix = " (Normalized)" if normalize else ""
-    title = ("🔗 Unified " if do_unify else "📊 Multi-File ") + \
-            f"Comparison | X: {x_param.replace('_', ' ').title()}{norm_suffix}"
-    ax.set_title(title, color=COLORS['fg'], fontsize=13, fontweight='bold')
+    # No in-figure title: the graph title lives in the OS window title
+    # (build_2d_title + MainWindow.set_graph_title) so the top margin
+    # belongs to the plot.
     ax.set_xlabel(x_param.replace('_', ' ').title(), color=COLORS['fg'])
 
     if x_ticks:
@@ -564,7 +617,58 @@ def _draw_unified(ax, pts, color, label, linestyle, handles, series=None):
     return records
 
 
+# ── 3-D camera modes (dolly vs free) ─────────────────────────────────────────
+
+def set_dolly_mode(enabled: bool) -> None:
+    """
+    Select the 3-D mouse-rotation style.
+
+    Enabled (dolly, the default): 'azel' — dragging rotates azimuth and
+    elevation only, roll stays 0, so the Z axis always points up. Disabled
+    (free): 'arcball' — quaternion trackball with roll, the Z axis can
+    tilt. Read per drag from rcParams, so toggling needs no re-render.
+    Best effort on old matplotlib (< 3.10 lacks the rcParam): dolly then
+    silently stays inactive instead of breaking the render.
+    """
+    import matplotlib as mpl
+    try:
+        mpl.rcParams['axes3d.mouserotationstyle'] = \
+            'azel' if enabled else 'arcball'
+    except KeyError:
+        pass
+
+
+def snap_roll_zero(ax) -> bool:
+    """
+    Reset the camera roll to 0 (Z up), keeping elev/azim/dist untouched.
+
+    Returns True when the roll actually changed (caller should redraw).
+    Direct attribute assignment — view_init() would also reset the zoom
+    distance. Residual float dust (< 1e-9 deg) counts as clean. Never
+    raises.
+    """
+    try:
+        roll = getattr(ax, 'roll', 0.0)
+        if abs(roll) > 1e-9:
+            ax.roll = 0.0
+            ax.stale = True
+            return True
+    except (TypeError, AttributeError, ValueError):
+        pass
+    return False
+
+
 # ── 3-D Rendering ─────────────────────────────────────────────────────────────
+
+def build_3d_title(x_param: str, y_param: str) -> str:
+    """
+    Window title for the 3-D parameter-space view.
+
+    Shown in the OS window title (see MainWindow.set_graph_title), not in
+    the figure — the freed top margin goes to the plot instead.
+    """
+    return (f"3D Parameter Space | X:{x_param.replace('_', ' ').title()} "
+            f"Y:{y_param.replace('_', ' ').title()}")
 
 def render_3d(
     points_pp: list[tuple],
@@ -642,6 +746,12 @@ def render_3d(
     fig = Figure(figsize=(11, 7), facecolor=bg)
     ax = fig.add_subplot(111, projection='3d')
     ax.set_facecolor(bg)
+    # Tighter-than-default data limits: the default 5 % autoscale padding
+    # costs plot area on every side without adding information here —
+    # error bars are part of the limits, only marker halves (~4 px) may
+    # touch the box edge. Camera persistence carries limits across
+    # re-renders, so first paint and later views stay consistent.
+    ax.margins(0.02)
 
     all_pts = points_pp + points_tg
     all_xs = [p[0] for p in all_pts]
@@ -744,14 +854,10 @@ def render_3d(
 
     _draw_merged_surfaces(ax, surfaces)
 
-    # Axis labels
+    # Axis labels (no in-figure title: it lives in the OS window title,
+    # see build_3d_title + MainWindow.set_graph_title).
     ax.set_xlabel(x_param.replace('_', ' ').title(), color=COLORS['fg'])
     ax.set_ylabel(y_param.replace('_', ' ').title(), color=COLORS['fg'])
-    ax.set_title(
-        f"3D Parameter Space | X:{x_param.replace('_', ' ').title()} "
-        f"Y:{y_param.replace('_', ' ').title()}",
-        color=COLORS['fg'], fontsize=12,
-    )
 
     _set_z_label(ax, z_label_mode, pp_color, tg_color)
     if normalized and z_label_mode in ("pp", "tg"):
@@ -788,6 +894,11 @@ def render_3d(
     ax.grid(color='#444444', linestyle='--', alpha=0.3)
 
     fig.tight_layout()
+    # Reclaim the full figure height: 3-D tick/axis labels live inside the
+    # scene (unlike 2-D labels outside the axes), so the bottom/top padding
+    # tight_layout reserves is empty space. Left/right keep tight_layout's
+    # label-driven values, which vary with tick-label length.
+    fig.subplots_adjust(bottom=0, top=1)
     return fig, ax
 
 
