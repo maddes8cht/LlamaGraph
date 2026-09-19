@@ -537,6 +537,83 @@ class TestTriangulateSeries:
         assert plain is not None and refined is not None
         assert len(refined[0]) > len(plain[0])
 
+    def test_linear_refinement_stays_in_range(self):
+        """Linear interpolation never overshoots the measured range."""
+        from view.plot_view import _triangulate_series
+        xs = [500.0, 500.0, 2000.0, 2000.0, 4000.0, 4000.0]
+        ys = [64.0, 512.0, 64.0, 512.0, 64.0, 512.0]
+        zs = [25.0, 30.0, 60.0, 55.0, 116.0, 100.0]
+        # Clamp off: the range guarantee must come from Linear alone,
+        # not from clamping (which would let even Cubic pass).
+        tri = _triangulate_series(xs, ys, zs, 1, "Linear", clamp_surface=False)
+        assert tri is not None
+        _, _, _, z_ref = tri
+        assert float(min(z_ref)) >= 25.0
+        assert float(max(z_ref)) <= 116.0
+
+
+class TestMaskGapTriangles:
+    """Tests for _mask_gap_triangles (pure helper, no axes required)."""
+
+    def _two_clusters(self):
+        xs = [0.0, 1.0, 0.0, 1.0, 100.0, 101.0, 100.0, 101.0]
+        ys = [0.0, 0.0, 1.0, 1.0, 100.0, 100.0, 101.0, 101.0]
+        zs = [10.0, 11.0, 12.0, 13.0, 20.0, 21.0, 22.0, 23.0]
+        return xs, ys, zs
+
+    def test_bridging_triangles_removed(self):
+        from view.plot_view import _mask_gap_triangles, _triangulate_series
+        xs, ys, zs = self._two_clusters()
+        tri = _triangulate_series(xs, ys, zs, 0)
+        assert tri is not None
+        triangles, tx, ty, _ = tri
+        masked = _mask_gap_triangles(triangles, tx, ty)
+        # Bridges across the gap are gone, intra-cluster triangles stay
+        assert 0 < len(masked) < len(triangles)
+
+    def test_regular_grid_untouched(self):
+        """A dense regular grid loses no triangles to the mask."""
+        from view.plot_view import _mask_gap_triangles, _triangulate_series
+        xs = [float(x) for x in (0, 1, 2) for _ in (0, 1, 2)]
+        ys = [float(y) for _ in (0, 1, 2) for y in (0, 1, 2)]
+        zs = [float(x + y) for x in (0, 1, 2) for y in (0, 1, 2)]
+        tri = _triangulate_series(xs, ys, zs, 0)
+        assert tri is not None
+        triangles, tx, ty, _ = tri
+        masked = _mask_gap_triangles(triangles, tx, ty)
+        assert len(masked) == len(triangles)
+
+    def test_empty_input_returns_empty(self):
+        import numpy as np
+        from view.plot_view import _mask_gap_triangles
+        result = _mask_gap_triangles(np.empty((0, 3), dtype=int), [], [])
+        assert len(result) == 0
+
+    def test_mask_flag_threads_through_triangulate(self):
+        """mask_gaps=True drops bridges end to end (no refinement)."""
+        from view.plot_view import _triangulate_series
+        xs, ys, zs = self._two_clusters()
+        plain = _triangulate_series(xs, ys, zs, 0, mask_gaps=False)
+        masked = _triangulate_series(xs, ys, zs, 0, mask_gaps=True)
+        assert plain is not None and masked is not None
+        assert len(masked[0]) < len(plain[0])
+
+
+class TestClampField:
+    """Tests for _clamp_field (pure helper, no axes required)."""
+
+    def test_clamps_out_of_range_values(self):
+        import numpy as np
+        from view.plot_view import _clamp_field
+        result = _clamp_field([-0.2, 0.5, 1.3], 0.0, 1.0)
+        assert list(result) == [0.0, 0.5, 1.0]
+
+    def test_passthrough_inside_range(self):
+        import numpy as np
+        from view.plot_view import _clamp_field
+        result = _clamp_field([0.0, 0.25, 1.0], 0.0, 1.0)
+        assert list(result) == [0.0, 0.25, 1.0]
+
 
 class TestSeriesFaceColors:
     """Tests for _series_face_colors (pure helper, no axes required)."""
@@ -671,6 +748,50 @@ class TestMergedSurfaceRender:
             surf = [c for c in ax.collections
                     if isinstance(c, Poly3DCollection)]
             assert len(surf) == 1, style
+
+    def test_interp_methods(self):
+        """Cubic and Linear refinement both produce the merged collection."""
+        pts = [(1.0, 2.0, 100.0, 5.0),
+               (2.0, 3.0, 110.0, 5.0),
+               (1.0, 3.0, 95.0, 5.0),
+               (3.0, 1.0, 105.0, 5.0)]
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        for method in ("Cubic", "Linear"):
+            fig, ax = render_3d(
+                points_pp=pts,
+                points_tg=[],
+                x_param="x", y_param="y",
+                pp_color="#ff0000", tg_color="#00ff00",
+                show_surface=True,
+                subdiv_level=1,
+                interp_method=method,
+            )
+            surf = [c for c in ax.collections
+                    if isinstance(c, Poly3DCollection)]
+            assert len(surf) == 1, method
+
+    def test_mask_gaps_leaves_open_gaps(self):
+        """Masked bridges still yield exactly one (partial) surface."""
+        pts = [(0.0, 0.0, 10.0, 1.0),
+               (1.0, 0.0, 11.0, 1.0),
+               (0.0, 1.0, 12.0, 1.0),
+               (1.0, 1.0, 13.0, 1.0),
+               (100.0, 100.0, 20.0, 1.0),
+               (101.0, 100.0, 21.0, 1.0),
+               (100.0, 101.0, 22.0, 1.0),
+               (101.0, 101.0, 23.0, 1.0)]
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        fig, ax = render_3d(
+            points_pp=pts,
+            points_tg=[],
+            x_param="x", y_param="y",
+            pp_color="#ff0000", tg_color="#00ff00",
+            show_surface=True,
+            mask_gaps=True,
+        )
+        surf = [c for c in ax.collections
+                if isinstance(c, Poly3DCollection)]
+        assert len(surf) == 1
 
     def test_wireframe_edges_passed_through(self):
         """Edge color and width reach the merged collection."""

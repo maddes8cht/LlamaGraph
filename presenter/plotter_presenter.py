@@ -579,13 +579,19 @@ class PlotterPresenter:
             return
 
         # Detect scale-relevant changes — a new axis combo, metric,
-        # normalization, or series visibility means the old axis limits
-        # (especially zlim) no longer fit the data. The home view is then
-        # re-recorded and only the viewing angle is carried over, so a
-        # stale zlim can never squash or blow out rescaled surfaces.
-        # Pure rotations and dimension-filter changes keep the full camera.
+        # normalization, series visibility, interpolation, or gap mask
+        # means the old axis limits (especially zlim) no longer fit the
+        # data. The home view is then re-recorded and only the viewing
+        # angle is carried over, so a stale zlim can never squash or blow
+        # out rescaled surfaces. Pure rotations and dimension-filter
+        # changes keep the full camera.
+        interp_raw = self._win.interp_method
+        mask_gaps = self._win.mask_gaps
+        clamp_surface = interp_raw.endswith("+Clamp")
+        interp_method = interp_raw[:-len("+Clamp")] if clamp_surface else interp_raw
         sig = (x_param, y_param, normalize, scale_pct,
-               self._show_ts, show_pp, show_tg)
+               self._show_ts, show_pp, show_tg, interp_raw, mask_gaps,
+               self._win.subdiv_level)
         scale_changed = (sig != self._last_3d_signature)
         if scale_changed:
             self._cam_3d = None
@@ -623,6 +629,9 @@ class PlotterPresenter:
             level_val=self._win.level_val,
             surface_style=self._win.surface_style,
             subdiv_level=self._win.subdiv_level,
+            interp_method=interp_method,
+            clamp_surface=clamp_surface,
+            mask_gaps=mask_gaps,
             normalized=normalize,
             pp_min=stats['pp_min'],
             pp_max=stats['pp_max'],

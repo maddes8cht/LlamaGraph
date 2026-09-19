@@ -309,6 +309,9 @@ def render_3d(
     level_val: int = 50,
     surface_style: str = "Solid",
     subdiv_level: int = 0,
+    interp_method: str = "Cubic",
+    clamp_surface: bool = False,
+    mask_gaps: bool = False,
     normalized: bool = False,
     pp_min: Optional[float] = None,
     pp_max: Optional[float] = None,
@@ -327,6 +330,20 @@ def render_3d(
         volume, so they overlap by design; use z_label_mode "pp"/"tg" to
         read the Z axis in absolute units of one series (via the
         *pp_min*/*pp_max*/*tg_min*/*tg_max* statistics).
+    interp_method:
+        Refinement interpolator for subdiv_level > 0: "Cubic" (smooth
+        Clough-Tocher, may overshoot between sparse points) or "Linear"
+        (piecewise linear, stays within the measured range). The
+        "Cubic+Clamp" toolbar choice maps to Cubic plus *clamp_surface*.
+    clamp_surface:
+        Clamp the refined field to the measured z range (anti-overshoot).
+    mask_gaps:
+        Drop triangles spanning unmeasured parameter gaps: the sorted
+        longest-edges are cut at the biggest relative jump (see
+        _mask_gap_triangles), so unmeasured regions stay open instead
+        of being bridged. Limitation: only the single largest
+        discontinuity is cut, so with several gaps of different sizes
+        the smaller bridges are retained.
 
     Both surfaces are drawn as a single merged Poly3DCollection so
     overlapping triangles are depth-sorted against each other.
@@ -390,7 +407,10 @@ def render_3d(
         # Surface triangulation — collected here, drawn once below as a
         # single merged collection (see _draw_merged_surfaces).
         if show_surface and len(pts) >= 3:
-            tri = _triangulate_series(xs, ys, zs, subdiv_level)
+            tri = _triangulate_series(
+                xs, ys, zs, subdiv_level, interp_method,
+                clamp_surface=clamp_surface, mask_gaps=mask_gaps,
+            )
             if tri is not None:
                 triangles, tx, ty, tz = tri
                 surfaces.append(
@@ -473,15 +493,32 @@ def render_3d(
     return fig, ax
 
 
-def _triangulate_series(xs, ys, zs, subdiv_level):
+# Triangles past an edge-length jump of this ratio are treated as
+# Delaunay bridges across unmeasured parameter gaps (see below).
+GAP_EDGE_FACTOR = 2.0
+
+
+def _triangulate_series(
+    xs, ys, zs, subdiv_level, interp_method="Cubic",
+    clamp_surface=False, mask_gaps=False,
+):
     """
     Delaunay-triangulate one series for the merged 3-D surface.
 
     Returns (triangles, x, y, z) where triangles is an (n, 3) index
     array into the coordinate arrays (refined when subdiv_level > 0),
-    or None when triangulation is impossible (fewer than 3 points or
-    degenerate geometry). Never raises — failures print a note and
-    yield None, leaving that series as scatter points only.
+    or None when triangulation is impossible (fewer than 3 points,
+    degenerate geometry, or everything masked as gap). Never raises —
+    failures print a note and yield None, leaving that series as
+    scatter points only.
+
+    Refinement uses "Cubic" (smooth, may overshoot between sparse
+    points) or "Linear" (piecewise linear, no overshoot interpolation);
+    any other value falls back to Cubic. With *clamp_surface* the
+    refined field is limited to the measured z range so no surface can
+    leave it, whichever method is chosen. With *mask_gaps* long
+    bridging triangles over unmeasured parameter gaps are dropped
+    (see _mask_gap_triangles).
     """
     try:
         x_arr = np.asarray(list(xs), dtype=float)
@@ -496,13 +533,74 @@ def _triangulate_series(xs, ys, zs, subdiv_level):
         if subdiv_level > 0:
             base = mtri.Triangulation(x_arr, y_arr)
             refiner = mtri.UniformTriRefiner(base)
-            tri, z_ref = refiner.refine_field(z_arr, subdiv=subdiv_level)
-            return tri.triangles, tri.x, tri.y, np.asarray(z_ref, dtype=float)
-        tri = mtri.Triangulation(x_arr, y_arr)
-        return tri.triangles, x_arr, y_arr, z_arr
+            if interp_method == "Linear":
+                interp = mtri.LinearTriInterpolator(base, z_arr)
+            else:
+                interp = mtri.CubicTriInterpolator(base, z_arr)
+            tri, z_ref = refiner.refine_field(
+                z_arr, triinterpolator=interp, subdiv=subdiv_level)
+            z_ref = np.asarray(z_ref, dtype=float)
+            if clamp_surface:
+                z_ref = _clamp_field(
+                    z_ref, float(np.min(z_arr)), float(np.max(z_arr)))
+            triangles, tx, ty = tri.triangles, tri.x, tri.y
+        else:
+            tri = mtri.Triangulation(x_arr, y_arr)
+            triangles, tx, ty, z_ref = tri.triangles, x_arr, y_arr, z_arr
+        if mask_gaps:
+            triangles = _mask_gap_triangles(triangles, tx, ty)
+            if len(triangles) == 0:
+                return None
+        return triangles, tx, ty, z_ref
     except Exception as exc:
         print(f"[PlotView] Triangulation skipped: {exc}")
         return None
+
+
+def _mask_gap_triangles(triangles, x, y, factor=GAP_EDGE_FACTOR):
+    """
+    Drop triangles spanning unmeasured parameter gaps.
+
+    Edge lengths are measured in per-axis-normalized x-y units (each
+    axis scaled to [0, 1], so differently scaled parameters compare
+    fairly). The sorted longest-edges are scanned for the biggest
+    relative jump: bridging triangles are orders of magnitude longer
+    than intra-cluster ones, while legitimate meshes grow smoothly.
+    Only when that jump exceeds *factor* is everything above it
+    dropped; otherwise the mesh is kept whole. Limitation: a single
+    cut at the largest jump — with several gaps of different sizes,
+    smaller bridges past further jumps are retained.
+    """
+    tris = np.asarray(triangles)
+    if len(tris) == 0:
+        return tris
+    xa = np.asarray(x, dtype=float)
+    ya = np.asarray(y, dtype=float)
+    x_span = float(np.max(xa) - np.min(xa)) or 1.0
+    y_span = float(np.max(ya) - np.min(ya)) or 1.0
+    xn = (xa - np.min(xa)) / x_span
+    yn = (ya - np.min(ya)) / y_span
+    px, py = xn[tris], yn[tris]
+    edges = np.stack([
+        np.hypot(px[:, 0] - px[:, 1], py[:, 0] - py[:, 1]),
+        np.hypot(px[:, 1] - px[:, 2], py[:, 1] - py[:, 2]),
+        np.hypot(px[:, 2] - px[:, 0], py[:, 2] - py[:, 0]),
+    ], axis=1)
+    longest = edges.max(axis=1)
+    ordered = np.sort(longest)
+    positive = ordered[ordered > 0]
+    if len(positive) < 2:
+        return tris
+    ratios = positive[1:] / positive[:-1]
+    jump = int(np.argmax(ratios))
+    if ratios[jump] <= factor:
+        return tris
+    return tris[longest <= positive[jump]]
+
+
+def _clamp_field(z_values, z_min: float, z_max: float):
+    """Clamp refined z values to the measured range (anti-overshoot)."""
+    return np.clip(np.asarray(z_values, dtype=float), z_min, z_max)
 
 
 def _series_face_colors(triangles, x, y, z, color, cmap, style, light):

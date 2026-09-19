@@ -69,6 +69,8 @@ class MainWindow:
         self._show_level_var = tk.IntVar(value=0)
         self._level_val_var = tk.IntVar(value=50)
         self._subdiv_var = tk.IntVar(value=0)
+        self._interp_var = tk.StringVar(value="Cubic")
+        self._mask_var = tk.IntVar(value=0)
         self._axis_x_var = tk.StringVar()
         self._axis_y_var = tk.StringVar()
 
@@ -214,6 +216,13 @@ class MainWindow:
         lbl(" SubDiv:").pack(side=tk.LEFT, padx=2)
         combo(self._subdiv_var, [0, 1, 2, 3, 4], width=3).pack(side=tk.LEFT, padx=2)
 
+        lbl(" Interp:").pack(side=tk.LEFT, padx=2)
+        # No "Linear+Clamp": linear interpolation cannot leave the
+        # measured range, so clamping would be a no-op for it.
+        combo(self._interp_var, ["Cubic", "Cubic+Clamp", "Linear"], width=12).pack(side=tk.LEFT, padx=2)
+
+        chk(" Mask", self._mask_var, '#cccccc').pack(side=tk.LEFT, padx=2)
+
         chk(" Wire", self._show_wireframe_var, '#cccccc').pack(side=tk.LEFT, padx=2)
         chk(" Err", self._show_errors_3d, '#f44747').pack(side=tk.LEFT, padx=2)
         chk(" Proj", self._show_projections_var, '#569cd6').pack(side=tk.LEFT, padx=2)
@@ -346,6 +355,14 @@ class MainWindow:
     @property
     def subdiv_level(self) -> int:
         return int(self._subdiv_var.get())
+
+    @property
+    def interp_method(self) -> str:
+        return self._interp_var.get()
+
+    @property
+    def mask_gaps(self) -> bool:
+        return bool(self._mask_var.get())
 
     @property
     def surface_style(self) -> str:
