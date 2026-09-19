@@ -9,9 +9,9 @@ Desktop GUI (Tkinter + Matplotlib) that visualizes [llama-bench](https://github.
 | Layer | Dir/File | Role |
 |---|---|---|
 | **Model** | `model/benchmark_model.py` | CSV loading, filtering, aggregation. Pure data — no Tk/Matplotlib. |
-| **View** | `view/main_window.py` | Tkinter frame layout, toolbar, axis combos |
-| | `view/plot_view.py` | Matplotlib canvas + `render_2d()`/`render_3d()` stateless funcs |
-| | `view/left_sidebar.py` | File list, per-series PP/TG toggles |
+| **View** | `view/main_window.py` | Tkinter frame layout, toolbars, axis combos, level controls |
+| | `view/plot_view.py` | Matplotlib canvas + `render_2d()`/`render_3d()` stateless funcs (merged 3-D surfaces, click tooltips) |
+| | `view/left_sidebar.py` | File list, build/model comparison filter, per-series PP/TG toggles |
 | | `view/right_sidebar.py` | Per-dimension filter listboxes |
 | **Presenter** | `presenter/plotter_presenter.py` | Orchestrator — wires callbacks, owns app state |
 | **Utils** | `utils/csv_parser.py`, `utils/colors.py` | CSV parsing, color math |
@@ -28,7 +28,7 @@ Desktop GUI (Tkinter + Matplotlib) that visualizes [llama-bench](https://github.
 
 ```bash
 pip install -r requirements.txt   # numpy, matplotlib, pytest
-python -m pytest tests/           # all 164 tests
+python -m pytest tests/           # all 352 tests (247 here; test_plot_view.py needs working native linalg)
 python -m pytest tests/test_benchmark_model.py -v          # single file
 python -m pytest tests/test_benchmark_model.py::test_load_files -v  # single test
 # coverage:
@@ -43,9 +43,7 @@ python -m pytest tests/ --cov=utils --cov=model --cov=presenter --cov=view --cov
 
 ## Known issues
 
-1. **`_save_camera` dead code** (`presenter/plotter_presenter.py:256-257`): `except Exception` is unreachable — `hasattr` only catches `AttributeError`, and the `if` block short-circuits before the try.
-2. **`get_3d_points` breaks on string params** (`model/benchmark_model.py:380`): `float()` conversion is attempted on all dimension values, so string params like `gpu_name` or `params` cause empty point lists.
-3. **CSV malformed rows silently dropped** (`utils/csv_parser.py`): rows with invalid n_prompt/n_gen are skipped with a print but no user feedback.
+1. **CSV malformed rows only console-logged** (`utils/csv_parser.py`): rows with invalid n_prompt/n_gen are skipped with a print but no user feedback.
 
 ## CSV format
 

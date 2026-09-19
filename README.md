@@ -21,11 +21,14 @@ It lets you visually explore the parameter space — any combination of `--n-gpu
 
 ### What it does
 
-- Loads one or more `llama-bench` CSV files
+- Loads one or more `llama-bench` CSV files (plus the human-readable `.md` tables)
 - Shows interactive 2D and 3D plots of any parameters against performance
 - Features a **right sidebar** that lets you filter any dimension not currently shown on the axes (this quickly became the most useful part, especially in 2D)
-- Supports toggling PP/TG per file, normalization, different Z-modes, surface styles, error bars, projections and more
-- Keeps the full 3D surface rendering with subdivision from the previous version
+- **Comparison filter** in the left sidebar: narrow the file list to a single build number / model file before comparing runs
+- Click any data point for a tooltip with both metrics (combined PP+TG view); in 3D a connector line bridges to the other surface
+- Supports toggling PP/TG per file, per-series normalization, different Z-modes (including absolute PP/TG scales), surface styles, Cubic/Linear refinement with anti-overshoot clamp and gap masking, error bars, projections, level plane and more
+- 3D surfaces share one depth-sorted collection so overlapping PP/TG render correctly
+- Axis ticks show actually measured values instead of decimal auto-ticks
 
 The interface is meant to be mostly self-explanatory after a bit of clicking around. A proper user guide will come later.
 
@@ -70,9 +73,8 @@ It does contain some strange bugs that need to be fixed.
 
 ### Future ideas (maybe, no promises)
 
-- Run `llama-bench` or `llama-optimus` directly from LlamaGraph and load the results immediately
-- Find smarter ways to fill data gaps with fewer benchmark runs, using said tools.
-- Support for other llama-bench output formats (JSON, JSONL, markdown, SQL)
+- Find smarter ways to fill data gaps with fewer benchmark runs.
+- Support for other llama-bench output formats (JSON, JSONL, SQL)
 - Better tools for comparing performance changes between llama.cpp PRs
 
 Feedback and pull requests are very welcome — especially ideas on how to make the visual exploration even more useful when working with auto-optimizers.
