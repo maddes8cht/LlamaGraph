@@ -8,6 +8,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_local_auto_config():
+    """
+    Isolate legacy entry-point tests from a developer-local
+    llamagraph.config.yml: auto-find is disabled so these tests always
+    exercise built-in defaults (explicit --config still works).
+    """
+    with patch("utils.startup_config.find_auto_config", return_value=None):
+        yield
+
+
 # ── parse_args tests (pure function, only depends on sys.argv) ────────────────
 
 

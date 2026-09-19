@@ -143,8 +143,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _clamp_int(value: int, low: int, high: int, name: str) -> int:
-    """Clamp a CLI integer into range (English error when not an int)."""
+def _check_int_range(value: int, low: int, high: int, name: str) -> int:
+    """Validate a CLI integer is within range (English error otherwise)."""
     try:
         number = int(value)
     except (TypeError, ValueError):
@@ -175,9 +175,6 @@ def resolve_startup(args: argparse.Namespace) -> tuple[dict, Optional[Path]]:
             sys.exit(1)
         if config_path.is_file():
             config = load_config_file(config_path)
-        elif args.config is not None:
-            # Already handled above; kept for clarity.
-            config = {}
 
     # Metric: --ns forces latency, --ts forces throughput, else config.
     if args.ns and args.ts:
@@ -232,12 +229,12 @@ def resolve_startup(args: argparse.Namespace) -> tuple[dict, Optional[Path]]:
             settings[key] = effective_value(None, config, key)
 
     if args.level_value is not None:
-        settings["level_value"] = _clamp_int(
+        settings["level_value"] = _check_int_range(
             args.level_value, 0, 100, "--level-value")
     else:
         settings["level_value"] = effective_value(None, config, "level_value")
     if args.subdiv_level is not None:
-        settings["subdiv_level"] = _clamp_int(
+        settings["subdiv_level"] = _check_int_range(
             args.subdiv_level, 0, 4, "--subdiv-level")
     else:
         settings["subdiv_level"] = effective_value(

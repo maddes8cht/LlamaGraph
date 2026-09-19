@@ -90,6 +90,20 @@ def test_cli_defaults_keep_old_behavior():
     assert args.mode_3d is None
 
 
+def test_auto_load_path_without_explicit_config(tmp_path):
+    """No --config flag: llamagraph.config.yml in the script dir applies."""
+    import llamagraph
+    auto = tmp_path / "llamagraph.config.yml"
+    auto.write_text("mode_3d: true\nlevel_value: 66\n")
+    with patch.object(sys, 'argv', ['llamagraph']), \
+         patch("utils.startup_config.script_dir", return_value=tmp_path):
+        args = llamagraph.parse_args()
+        settings, used = llamagraph.resolve_startup(args)
+    assert used == auto
+    assert settings["mode_3d"] is True
+    assert settings["level_value"] == 66
+
+
 def test_config_values_apply_without_cli(tmp_path):
     import llamagraph
     cfg = tmp_path / "c.yml"
