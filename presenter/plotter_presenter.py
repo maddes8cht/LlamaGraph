@@ -23,7 +23,12 @@ from model.benchmark_model import BenchmarkModel
 from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
 from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
-from view.plot_view import thin_value_ticks, render_2d, render_3d
+from view.plot_view import (
+    interp_surface_z,
+    thin_value_ticks,
+    render_2d,
+    render_3d,
+)
 
 # Tooltip appearance/behavior (shared by the 2-D and 3-D pick handlers)
 TOOLTIP_ALPHA = 0.85
@@ -87,6 +92,7 @@ class PlotterPresenter:
         self._last_2d_x: str = ""
         self._last_3d: dict = {}
         self._active_tip = None
+        self._connector_line = None
 
         # Connect everything
         self._wire_callbacks()
@@ -672,7 +678,9 @@ class PlotterPresenter:
         )
 
         self._current_3d_ax = ax
-        self._last_3d = {'infos': infos, 'x_param': x_param, 'y_param': y_param}
+        self._last_3d = {'infos': infos, 'x_param': x_param, 'y_param': y_param,
+                         'points': {'pp': points_pp, 'tg': points_tg}}
+        self._connector_line = None  # new canvas drops the old connector
         self._win.plot_view.render(fig, ax3d=ax, on_pick_cb=self._on_pick_3d)
 
         # Apply categorical tick labels if dimensions are string-valued
@@ -776,6 +784,8 @@ class PlotterPresenter:
 
     def _on_pick(self, event) -> None:
         """2-D tooltip: axis name, both metrics with errors."""
+        if event is None:
+            return  # empty click: nothing transient in 2-D
         if not hasattr(event, 'ind') or len(event.ind) == 0:
             return
         ind = event.ind[0]
@@ -813,6 +823,10 @@ class PlotterPresenter:
 
     def _on_pick_3d(self, event) -> None:
         """3-D tooltip: both axis names/values plus both metrics."""
+        if event is None:
+            if self._clear_connector():
+                self._win.plot_view.redraw_idle()
+            return
         if not hasattr(event, 'ind') or len(event.ind) == 0:
             return
         ind = event.ind[0]
@@ -835,3 +849,50 @@ class PlotterPresenter:
                  f"{y_title}: {self._fmt_axis_value(info.get('y'))}"]
         lines.extend(self._metric_lines(info))
         self._show_tooltip("\n".join(lines))
+        self._update_connector(label, ind)
+
+    def _update_connector(self, label: str, ind: int) -> None:
+        """
+        Vertical dashed line from the picked point to the other surface.
+
+        The counterpart height is linearly interpolated on the other
+        series at the picked (x, y); without coverage there (outside
+        its hull) no line is drawn. Exactly one connector exists at a
+        time — each new pick moves it. Never raises.
+        """
+        removed = self._clear_connector()
+        drawn = False
+        try:
+            series = 'pp' if label == 'PP' else 'tg'
+            all_points = self._last_3d.get('points', {}) or {}
+            pts = all_points.get(series) or []
+            other = all_points.get('tg' if series == 'pp' else 'pp') or []
+            if not (0 <= ind < len(pts)) or not other:
+                return
+            x, y, z = pts[ind][0], pts[ind][1], pts[ind][2]
+            z_other = interp_surface_z(
+                [p[0] for p in other], [p[1] for p in other],
+                [p[2] for p in other], x, y)
+            if z_other is None:
+                return
+            ax = self._current_3d_ax
+            lines = ax.plot([x, x], [y, y], [z, z_other],
+                            color='#cccccc', linestyle='--', linewidth=1.5)
+            self._connector_line = lines[0] if lines else None
+            drawn = self._connector_line is not None
+        except Exception as exc:
+            print(f"[Presenter] Connector warning: {exc}")
+        finally:
+            if removed or drawn:
+                self._win.plot_view.redraw_idle()
+
+    def _clear_connector(self) -> bool:
+        """Remove the current connector line; True when one existed."""
+        line, self._connector_line = self._connector_line, None
+        if line is None:
+            return False
+        try:
+            line.remove()
+        except Exception:
+            pass
+        return True

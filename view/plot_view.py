@@ -76,6 +76,7 @@ class PlotView(tk.Frame):
         self._toolbar: Optional[CustomNavigationToolbar] = None
         self._home_cb: Optional[Callable] = None
         self._pick_cb: Optional[Callable] = None
+        self._press_xy: Optional[tuple] = None
 
         self._placeholder = tk.Label(
             self,
@@ -114,11 +115,14 @@ class PlotView(tk.Frame):
             The 3-D Axes3D instance (if a 3-D plot), else None.
         on_pick_cb:
             Optional callback for data-point clicks (2-D lines and
-            3-D scatter). Dispatched manually on left button press so
-            every tagged artist is considered figure-wide (Matplotlib's
-            built-in pick dispatch skips artists whose axes is not the
-            topmost one — with twin axes the PP series would never
-            fire) and the nearest hit wins instead of the last event.
+            3-D scatter). Clicks dispatch manually so every tagged
+            artist is considered figure-wide (Matplotlib's built-in
+            pick dispatch skips artists whose axes is not the topmost
+            one — with twin axes the PP series would never fire) and
+            the nearest hit wins instead of the last event. A click
+            counts as press+release without dragging, so rotation
+            drags never pick or dismiss; clicks with no hit notify
+            with None (overlay dismissal).
         """
         self._destroy_canvas()
         self._placeholder.pack_forget()
@@ -136,7 +140,33 @@ class PlotView(tk.Frame):
 
         self._pick_cb = on_pick_cb
         if on_pick_cb:
-            self._canvas.mpl_connect('button_press_event', self._dispatch_pick)
+            self._canvas.mpl_connect('button_press_event', self._on_press)
+            self._canvas.mpl_connect('button_release_event', self._on_release)
+
+    def _on_press(self, mouseevent) -> None:
+        """Remember press position for click-vs-drag detection."""
+        try:
+            if getattr(mouseevent, 'button', 1) == 1:
+                self._press_xy = (mouseevent.x, mouseevent.y)
+            else:
+                self._press_xy = None
+        except Exception:
+            self._press_xy = None
+
+    def _on_release(self, mouseevent) -> None:
+        """Dispatch only press+release pairs without dragging."""
+        try:
+            start = getattr(self, '_press_xy', None)
+            self._press_xy = None
+            if start is None or getattr(mouseevent, 'button', 1) != 1:
+                return
+            moved = math.hypot(mouseevent.x - start[0],
+                               mouseevent.y - start[1])
+            if moved > CLICK_DRAG_TOL_PX:
+                return  # rotation/pan drag — no pick, no dismiss
+        except Exception:
+            return
+        self._dispatch_pick(mouseevent)
 
     def _dispatch_pick(self, mouseevent) -> None:
         """
@@ -144,8 +174,11 @@ class PlotView(tk.Frame):
 
         Tests every line/collection carrying `_llama_records` with its
         own picker and calls the pick callback once for the closest
-        hit. Ignores non-left clicks and clicks while a toolbar tool
-        (pan/zoom) is active. Never raises.
+        hit — or with None when the click landed outside the data
+        rectangles, so the presenter can dismiss transient overlays
+        (connector line). Clicks on plot data never dismiss, keeping
+        rotation drags harmless. Ignores non-left clicks and clicks
+        while a toolbar tool (pan/zoom) is active. Never raises.
         """
         cb = self._pick_cb
         if cb is None:
@@ -185,6 +218,14 @@ class PlotView(tk.Frame):
                 if best is None or dist < best[0]:
                     best = (dist, artist, idx)
         if best is None:
+            # Click without a data hit (empty plot area, decorations,
+            # legend, title, figure background): dismiss overlays.
+            # Rotation drags never reach dispatch (click-vs-drag gate
+            # in _on_release), so keeping the connector is safe.
+            try:
+                cb(None)
+            except Exception:
+                pass
             return
         _, artist, idx = best
         try:
@@ -359,6 +400,11 @@ def _point_record(p: dict, label: Optional[str] = None) -> dict:
     if label is not None:
         rec['label'] = label
     return rec
+
+
+# Click-vs-drag tolerance: press+release pairs moving less than this
+# (screen pixels) count as clicks; anything beyond is a rotation drag.
+CLICK_DRAG_TOL_PX = 5.0
 
 
 def _nearest_hit_index(artist, inds: list, mouseevent) -> tuple:
@@ -836,6 +882,34 @@ def _mask_gap_triangles(triangles, x, y, factor=GAP_EDGE_FACTOR):
 def _clamp_field(z_values, z_min: float, z_max: float):
     """Clamp refined z values to the measured range (anti-overshoot)."""
     return np.clip(np.asarray(z_values, dtype=float), z_min, z_max)
+
+
+def interp_surface_z(xs, ys, zs, x: float, y: float) -> Optional[float]:
+    """
+    Linearly interpolated surface height at (x, y) from scattered points.
+
+    Returns None when interpolation is impossible (fewer than 3 points,
+    degenerate geometry, non-finite result, or (x, y) outside the
+    triangulated hull — masked values). Never raises.
+    """
+    try:
+        x_arr = np.asarray(list(xs), dtype=float)
+        y_arr = np.asarray(list(ys), dtype=float)
+        z_arr = np.asarray(list(zs), dtype=float)
+        if len(x_arr) < 3:
+            return None
+        tri = mtri.Triangulation(x_arr, y_arr)
+        interp = mtri.LinearTriInterpolator(tri, z_arr)
+        z = interp(float(x), float(y))
+    except Exception:
+        return None
+    try:
+        if np.ma.is_masked(z):
+            return None
+        value = float(z)
+    except (ValueError, TypeError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _series_face_colors(triangles, x, y, z, color, cmap, style, light):

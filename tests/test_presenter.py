@@ -1640,3 +1640,113 @@ def test_on_pick_record_without_label_shows_values_only(tmp_path):
         text = mock_lbl.call_args.kwargs.get('text', '')
         assert "_no_legend_" not in text
         assert text.splitlines()[0] == "N Batch: 512"
+
+
+def _mock_3d_pick(label="PP", ind=0, info=None):
+    """3D pick event on a scatter artist carrying tooltip records."""
+    if info is None:
+        info = {'x': 512.0, 'y': 64.0, 'ts': 100.5, 'ts_err': 5.2,
+                'ns': 50250.0, 'ns_err': 2600.0}
+    event = MagicMock()
+    event.ind = [ind]
+    event.artist.get_label.return_value = label
+    event.artist._llama_records = [info]
+    return event
+
+
+def _presenter_with_3d_points(tmp_path):
+    """Presenter with two overlapping series for connector tests."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_3d = {
+        'x_param': 'n_batch',
+        'y_param': 'n_ubatch',
+        'points': {
+            'pp': [(512.0, 64.0, 0.9, 0.05)],
+            'tg': [(512.0, 64.0, 0.5, 0.02),
+                   (1024.0, 64.0, 0.6, 0.02),
+                   (512.0, 128.0, 0.7, 0.02),
+                   (1024.0, 128.0, 0.8, 0.02)],
+        },
+        'infos': {'pp': [{'x': 512.0, 'y': 64.0, 'ts': 100.5,
+                          'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0}],
+                  'tg': []},
+    }
+    presenter._current_3d_ax = MagicMock()
+    return presenter
+
+
+def test_pick_3d_draws_connector_to_other_surface(tmp_path):
+    """Picking a PP point draws a vertical line to the TG surface."""
+    presenter = _presenter_with_3d_points(tmp_path)
+
+    with patch('tkinter.Toplevel'), patch('tkinter.Label'):
+        presenter._on_pick_3d(_mock_3d_pick())
+
+    ax = presenter._current_3d_ax
+    ax.plot.assert_called_once()
+    args, kwargs = ax.plot.call_args
+    assert args[0] == [512.0, 512.0]
+    assert args[1] == [64.0, 64.0]
+    assert args[2][0] == pytest.approx(0.9)
+    assert args[2][1] == pytest.approx(0.5)
+    assert kwargs.get('linestyle') == '--'
+    assert presenter._connector_line is ax.plot.return_value[0]
+
+
+def test_pick_3d_moves_connector_and_removes_old(tmp_path):
+    """A second pick replaces the connector line."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    old_line = MagicMock()
+    presenter._connector_line = old_line
+
+    with patch('tkinter.Toplevel'), patch('tkinter.Label'):
+        presenter._on_pick_3d(_mock_3d_pick())
+
+    old_line.remove.assert_called_once()
+    assert presenter._connector_line is presenter._current_3d_ax.plot.return_value[0]
+
+
+def test_pick_3d_no_connector_without_coverage(tmp_path):
+    """Picked point outside the other hull → tooltip only, no line."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    presenter._last_3d['points']['pp'] = [(9999.0, 9999.0, 0.9, 0.05)]
+
+    with patch('tkinter.Toplevel'), patch('tkinter.Label'):
+        presenter._on_pick_3d(_mock_3d_pick())
+
+    presenter._current_3d_ax.plot.assert_not_called()
+    assert presenter._connector_line is None
+
+
+def test_empty_click_dismisses_connector(tmp_path):
+    """Clicking empty space removes the connector line and repaints."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    old_line = MagicMock()
+    presenter._connector_line = old_line
+
+    presenter._on_pick_3d(None)
+
+    old_line.remove.assert_called_once()
+    assert presenter._connector_line is None
+    assert presenter._win.plot_view.redraw_count == 1
+
+
+def test_empty_click_without_line_skips_repaint(tmp_path):
+    """No connector present → no removal, no repaint."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    assert presenter._connector_line is None
+
+    presenter._on_pick_3d(None)
+
+    assert presenter._win.plot_view.redraw_count == 0
+
+
+def test_empty_click_2d_is_ignored(tmp_path):
+    """Empty clicks do nothing in 2-D (no transient overlay there)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+
+    with patch('tkinter.Toplevel') as mock_tl:
+        presenter._on_pick(None)
+        mock_tl.assert_not_called()

@@ -989,7 +989,8 @@ class TestDispatchPick:
         cb.assert_called_once()
         assert cb.call_args.args[0].artist is pp_line
 
-    def test_no_hit_no_callback(self):
+    def test_no_hit_calls_back_with_none(self):
+        """Clicks without a data hit notify with None (overlay dismissal)."""
         cb = MagicMock()
         pv = self._make_view(cb)
         artist = MagicMock()
@@ -1001,6 +1002,51 @@ class TestDispatchPick:
         mouse.canvas.figure.axes = [ax]
 
         pv._dispatch_pick(mouse)
+
+        cb.assert_called_once_with(None)
+
+    def test_press_release_without_move_dispatches(self):
+        """Click (no drag) reaches dispatch with the release event."""
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        artist = self._artist([{'x': 1.0}], [0])
+        ax = MagicMock()
+        ax.lines, ax.collections = [artist], []
+        press = self._mouse(x=10.0, y=10.0)
+        release = self._mouse(x=12.0, y=11.0)
+        release.canvas.figure.axes = [ax]
+
+        pv._on_press(press)
+        pv._on_release(release)
+
+        cb.assert_called_once()
+        assert cb.call_args.args[0].artist is artist
+
+    def test_drag_suppresses_pick_and_dismiss(self):
+        """Rotation drags trigger neither tooltip nor dismissal."""
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        artist = self._artist([{'x': 1.0}], [0])
+        ax = MagicMock()
+        ax.lines, ax.collections = [artist], []
+        press = self._mouse(x=10.0, y=10.0)
+        release = self._mouse(x=100.0, y=100.0)
+        release.canvas.figure.axes = [ax]
+
+        pv._on_press(press)
+        pv._on_release(release)
+
+        cb.assert_not_called()
+
+    def test_non_left_press_never_dispatches(self):
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        press = self._mouse(button=3)
+        release = self._mouse(button=3)
+        release.canvas.figure.axes = []
+
+        pv._on_press(press)
+        pv._on_release(release)
 
         cb.assert_not_called()
 
@@ -1127,6 +1173,33 @@ class TestAttachRecords:
         from view.plot_view import _attach_records
         _attach_records(MagicMock(side_effect=RuntimeError("bad")),
                         [{'x': 1.0}])  # must not raise
+
+
+# ── interp_surface_z ────────────────────────────────────────────────────
+
+
+class TestInterpSurfaceZ:
+    """Tests for interp_surface_z (pure helper, no axes required)."""
+
+    def test_inside_hull_interpolates(self):
+        from view.plot_view import interp_surface_z
+        xs = [0.0, 1.0, 0.0, 1.0]
+        ys = [0.0, 0.0, 1.0, 1.0]
+        zs = [10.0, 20.0, 30.0, 40.0]
+        assert interp_surface_z(xs, ys, zs, 0.5, 0.5) == \
+            pytest.approx(25.0)
+
+    def test_outside_hull_returns_none(self):
+        from view.plot_view import interp_surface_z
+        xs = [0.0, 1.0, 0.0, 1.0]
+        ys = [0.0, 0.0, 1.0, 1.0]
+        zs = [10.0, 20.0, 30.0, 40.0]
+        assert interp_surface_z(xs, ys, zs, 5.0, 5.0) is None
+
+    def test_too_few_points_returns_none(self):
+        from view.plot_view import interp_surface_z
+        assert interp_surface_z([0.0], [0.0], [1.0], 0.0, 0.0) is None
+        assert interp_surface_z([], [], [], 0.0, 0.0) is None
 
 
 # ── Measured value ticks in renderers ────────────────────────────────────
@@ -1357,7 +1430,7 @@ class TestPlotView:
         self._cleanup_pv()
 
     def test_render_3d_with_pick_cb(self):
-        """render with fig + ax3d + on_pick_cb → button-press dispatch."""
+        """render with fig + ax3d + on_pick_cb → press+release dispatch."""
         pv = self._make_pv()
         fig = Figure()
         ax = MagicMock(spec=['elev', 'azim'])
@@ -1368,13 +1441,12 @@ class TestPlotView:
                 pv.render(fig, ax3d=ax, on_pick_cb=pick_cb)
 
                 inst = mock_canvas_cls.return_value
-                inst.mpl_connect.assert_called_once()
-                args, _ = inst.mpl_connect.call_args
-                assert args[0] == 'button_press_event'
+                kinds = [c.args[0] for c in inst.mpl_connect.call_args_list]
+                assert kinds == ['button_press_event', 'button_release_event']
         self._cleanup_pv()
 
     def test_render_2d_with_pick_cb(self):
-        """render with fig and on_pick_cb (ax3d=None) → button-press dispatch."""
+        """render with fig and on_pick_cb → press+release dispatch wiring."""
         pv = self._make_pv()
         fig = Figure()
         pick_cb = MagicMock()
@@ -1384,9 +1456,8 @@ class TestPlotView:
                 pv.render(fig, on_pick_cb=pick_cb)
 
                 inst = mock_canvas_cls.return_value
-                inst.mpl_connect.assert_called_once()
-                args, _ = inst.mpl_connect.call_args
-                assert args[0] == 'button_press_event'
+                kinds = [c.args[0] for c in inst.mpl_connect.call_args_list]
+                assert kinds == ['button_press_event', 'button_release_event']
         self._cleanup_pv()
 
     def test_redraw_idle_with_canvas(self):
