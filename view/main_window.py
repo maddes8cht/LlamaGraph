@@ -52,31 +52,49 @@ class MainWindow:
         root: tk.Tk,
         pp_color: str = DEFAULT_PP_COLOR,
         tg_color: str = DEFAULT_TG_COLOR,
+        show_pp: bool = True,
+        show_tg: bool = True,
+        unify: bool = False,
+        normalize: bool = False,
+        mode_3d: bool = False,
+        show_surface: bool = True,
+        surface_style: str = "Solid",
+        show_wireframe: bool = False,
+        show_projections: bool = False,
+        show_errors: bool = True,
+        dolly: bool = True,
+        z_label_mode: str = "both-norm",
+        show_level: bool = False,
+        level_value: int = 50,
+        subdiv_level: int = 0,
+        interp_method: str = "Cubic",
+        mask_gaps: bool = False,
     ) -> None:
         self._root = root
         self._pp_color = pp_color
         self._tg_color = tg_color
 
-        # ── Tkinter state variables ──────────────────────────────────────────
-        self._show_pp = tk.IntVar(value=1)
-        self._show_tg = tk.IntVar(value=1)
-        self._unify_var = tk.IntVar(value=0)
-        self._normalize_var = tk.IntVar(value=0)
-        self._mode_3d = tk.IntVar(value=0)
+        # ── Tkinter state variables (startup values may come from
+        # ── CLI options or llamagraph.config.yml via llamagraph.py) ──
+        self._show_pp = tk.IntVar(value=1 if show_pp else 0)
+        self._show_tg = tk.IntVar(value=1 if show_tg else 0)
+        self._unify_var = tk.IntVar(value=1 if unify else 0)
+        self._normalize_var = tk.IntVar(value=1 if normalize else 0)
+        self._mode_3d = tk.IntVar(value=1 if mode_3d else 0)
 
         # 3-D specific vars
-        self._show_surface = tk.IntVar(value=1)
-        self._surface_style_var = tk.StringVar(value="Solid")
-        self._show_wireframe_var = tk.IntVar(value=0)
-        self._show_projections_var = tk.IntVar(value=0)
-        self._show_errors_3d = tk.IntVar(value=1)
-        self._dolly_var = tk.IntVar(value=1)
-        self._z_label_mode = tk.StringVar(value="both-norm")
-        self._show_level_var = tk.IntVar(value=0)
-        self._level_val_var = tk.IntVar(value=50)
-        self._subdiv_var = tk.IntVar(value=0)
-        self._interp_var = tk.StringVar(value="Cubic")
-        self._mask_var = tk.IntVar(value=0)
+        self._show_surface = tk.IntVar(value=1 if show_surface else 0)
+        self._surface_style_var = tk.StringVar(value=surface_style)
+        self._show_wireframe_var = tk.IntVar(value=1 if show_wireframe else 0)
+        self._show_projections_var = tk.IntVar(value=1 if show_projections else 0)
+        self._show_errors_3d = tk.IntVar(value=1 if show_errors else 0)
+        self._dolly_var = tk.IntVar(value=1 if dolly else 0)
+        self._z_label_mode = tk.StringVar(value=z_label_mode)
+        self._show_level_var = tk.IntVar(value=1 if show_level else 0)
+        self._level_val_var = tk.IntVar(value=max(0, min(100, int(level_value))))
+        self._subdiv_var = tk.IntVar(value=max(0, min(4, int(subdiv_level))))
+        self._interp_var = tk.StringVar(value=interp_method)
+        self._mask_var = tk.IntVar(value=1 if mask_gaps else 0)
         self._axis_x_var = tk.StringVar()
         self._axis_y_var = tk.StringVar()
 

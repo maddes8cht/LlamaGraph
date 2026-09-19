@@ -64,6 +64,28 @@ The [`tools/`](./tools/) directory contains standalone helpers that produce the 
 
 - **[llama-optimizer](./tools/llama-optimizer/)** — sequential/grid wrapper around `llama-bench` that finds optimal parameters for a GGUF model and writes `bench_*.csv` (+ human-readable `bench_*.md`) straight for LlamaGraph. See `tools/llama-optimizer/llama-optimizer.README.md` for usage and the `params.txt` reference.
 
+### Startup configuration
+
+LlamaGraph starts with built-in defaults (2D tokens/s view) when no config
+is present, so existing start behavior is unchanged.
+
+- Place a `llamagraph.config.yml` file next to `llamagraph.py` to apply it
+  automatically at startup (this file is git-ignored and never committed).
+- Use `python llamagraph.py --config <file>` to load any other config file,
+  for example the committed `example.llamagraph.config.yml`, which documents
+  every supported key (default data path, latency vs. tokens/s, `.md` usage,
+  normalization, 3D mode, level plane + value, surface visibility + style,
+  subdivision, interpolation, mask/wireframe/errors/projections, dolly,
+  Z label mode, unify, PP/TG visibility).
+- Use `python llamagraph.py --no-config` to ignore every config file.
+- Explicit CLI options always win over config values (for example `--ns` /
+  `--ts`, `--no-md` / `--md`, `--normalize` / `--no-normalize`,
+  `--mode-3d` / `--no-mode-3d`, `--level-value`, `--surface-style`,
+  `--subdiv-level`, `--interp-method`, `--z-label-mode`).
+
+No extra dependency is needed: the flat `key: value` YAML subset is parsed
+with the standard library only.
+
 ### Current status
 
 This is an early but already very usable version (v0.1).  

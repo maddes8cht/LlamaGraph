@@ -210,6 +210,10 @@ __marimo__/
 *.csv
 *.txt
 
+# LlamaGraph local startup config (auto-loaded next to the script; never commit).
+# The documented example (example.llamagraph.config.yml) stays committed.
+llamagraph.config.yml
+
 # LlamaGraph benchmark data (local optimizer runs: bench_*.csv/.md, opt_results_*.txt)
 # (*.csv/*.txt above already cover most of it; the rest catches .md artifacts
 # anywhere plus the whole local data/ dir with any future extensions)

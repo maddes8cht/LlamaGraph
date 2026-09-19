@@ -1,0 +1,98 @@
+# example.llamagraph.config.yml — documented startup example for LlamaGraph.
+#
+# Copy this file to `llamagraph.config.yml` next to llamagraph.py to use it
+# automatically at startup, or point at it explicitly with:
+#   python llamagraph.py --config example.llamagraph.config.yml
+#
+# Format: flat `key: value` pairs only (no nesting, no lists). Lines starting
+# with `#` are comments. Values support true/false, numbers, and strings.
+# No extra dependency is needed: LlamaGraph parses this file with the
+# standard library only.
+#
+# Precedence: explicit CLI options always win over these values. Use the
+# negated CLI form to opt out of a single default (for example `--ts`
+# overrides `latency_ns: true`, `--no-normalize` overrides
+# `normalize: true`), or `--no-config` to ignore every config file.
+#
+# All values below are the built-in defaults (plain 2D tokens/s start).
+
+# Default data location used when no path argument is given.
+# Use a directory or a specific .csv/.md file. An explicit CLI path
+# always wins over this value.
+data_path: "."
+
+# Metric at startup: false = throughput (tokens/s), true = latency (ns).
+# CLI: --ns forces latency, --ts forces throughput.
+latency_ns: false
+
+# List .md files alongside .csv files (sidebar toggle visible).
+# CLI: --no-md hides .md files, --md shows them.
+use_md: true
+
+# Start with per-series normalization enabled.
+# CLI: --normalize / --no-normalize
+normalize: false
+
+# Start in 3D mode (false = 2D line plot).
+# CLI: --mode-3d / --no-mode-3d
+mode_3d: false
+
+# Show the 3D level plane at startup.
+# CLI: --show-level / --no-show-level
+show_level: false
+
+# Level plane value (0-100). Only used when show_level is true.
+# CLI: --level-value 0-100
+level_value: 50
+
+# Render the 3D surface at startup.
+# CLI: --surface / --no-surface
+surface_visible: true
+
+# Surface style: Solid, Shaded, or Colormap.
+# CLI: --surface-style Solid|Shaded|Colormap
+surface_style: "Solid"
+
+# Subdivision refinement level (0-4, higher = smoother but slower).
+# CLI: --subdiv-level 0-4
+subdiv_level: 0
+
+# Interpolation mode: Cubic, Cubic+Clamp, or Linear.
+# CLI: --interp-method Cubic|Cubic+Clamp|Linear
+interp_method: "Cubic"
+
+# Mask unmeasured gaps instead of bridging them.
+# CLI: --mask-gaps / --no-mask-gaps
+mask_gaps: false
+
+# Show the 3D wireframe at startup.
+# CLI: --wireframe / --no-wireframe
+show_wireframe: false
+
+# Show 3D error bars at startup.
+# CLI: --errors / --no-errors
+show_errors: true
+
+# Show 3D projections at startup.
+# CLI: --projections / --no-projections
+show_projections: false
+
+# Dolly (roll-locked) rotation style at startup.
+# CLI: --dolly / --no-dolly
+dolly: true
+
+# Z label mode: pp, tg, both-norm, or %.
+# CLI: --z-label-mode pp|tg|both-norm|%
+z_label_mode: "both-norm"
+
+# Start with unified (combined) series.
+# CLI: --unify / --no-unify
+unify: false
+
+# Show the PP (prompt processing) series at startup.
+# CLI: --show-pp / --no-show-pp
+show_pp: true
+
+# Show the TG (token generation) series at startup.
+# CLI: --show-tg / --no-show-tg
+show_tg: true
