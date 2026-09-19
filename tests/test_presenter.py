@@ -164,6 +164,8 @@ class MockMainWindow:
         self._show_level = 0
         self._level_val = 50
         self._subdiv = 0
+        self._interp_method = "Cubic"
+        self._mask_gaps = False
         self._axis_x = ""
         self._axis_y = ""
 
@@ -225,6 +227,14 @@ class MockMainWindow:
     @property
     def subdiv_level(self) -> int:
         return self._subdiv
+
+    @property
+    def interp_method(self) -> str:
+        return self._interp_method
+
+    @property
+    def mask_gaps(self) -> bool:
+        return self._mask_gaps
 
     @property
     def surface_style(self) -> str:
@@ -1280,3 +1290,128 @@ def test_3d_norm_toggle_restores_rotation_only(tmp_path):
             presenter._render_plot()  # same scale → full camera restore
             ax3.view_init.assert_called_once_with(elev=60.0, azim=-45.0)
             ax3.set_zlim3d.assert_called_once()
+
+
+def test_3d_render_passes_interp_method(tmp_path):
+    """The toolbar interpolation choice reaches render_3d."""
+    csv1 = create_bench_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    presenter._available_csvs = [csv1]
+    presenter._visible_csvs = [csv1]
+    presenter._on_file_select([0])
+
+    window._mode_3d = 1
+    window._axis_x = "params"
+    window._axis_y = "n_gpu_layers"
+    window._interp_method = "Linear"
+
+    with patch('presenter.plotter_presenter.render_3d',
+               return_value=(MagicMock(), _mock_3d_ax())) as mock_render:
+        with patch.object(window.plot_view, 'render'):
+            presenter._render_plot()
+            _, kwargs = mock_render.call_args
+            assert kwargs.get('interp_method') == "Linear"
+
+
+def test_3d_render_passes_clamp_and_mask(tmp_path):
+    """The '+Clamp' suffix and Mask checkbox reach render_3d parsed."""
+    csv1 = create_bench_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    presenter._available_csvs = [csv1]
+    presenter._visible_csvs = [csv1]
+    presenter._on_file_select([0])
+
+    window._mode_3d = 1
+    window._axis_x = "params"
+    window._axis_y = "n_gpu_layers"
+    window._interp_method = "Cubic+Clamp"
+    window._mask_gaps = True
+
+    with patch('presenter.plotter_presenter.render_3d',
+               return_value=(MagicMock(), _mock_3d_ax())) as mock_render:
+        with patch.object(window.plot_view, 'render'):
+            presenter._render_plot()
+            _, kwargs = mock_render.call_args
+            assert kwargs.get('interp_method') == "Cubic"
+            assert kwargs.get('clamp_surface') is True
+            assert kwargs.get('mask_gaps') is True
+
+
+def _create_grid_csv(path: Path) -> Path:
+    """CSV with discrete n_batch/n_gpu_layers measurement values."""
+    path.write_text(
+        "n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns,n_batch,n_gpu_layers\n"
+        "1024,0,100.5,5.2,50250,2600,512,32\n"
+        "1024,0,120.1,6.3,60050,3150,1024,32\n"
+        "0,256,85.3,4.1,42650,2050,512,64\n"
+    )
+    return path
+
+
+def test_2d_render_receives_measured_x_ticks(tmp_path):
+    """2D render gets ticks at the actually measured X values."""
+    csv1 = _create_grid_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    presenter._available_csvs = [csv1]
+    presenter._visible_csvs = [csv1]
+    presenter._on_file_select([0])
+
+    window._mode_3d = 0
+    window._axis_x = "n_batch"
+
+    with patch('presenter.plotter_presenter.render_2d',
+               return_value=MagicMock()) as mock_render:
+        with patch.object(window.plot_view, 'render'):
+            presenter._render_plot()
+            _, kwargs = mock_render.call_args
+            assert kwargs.get('x_ticks') == [(512.0, "512"), (1024.0, "1024")]
+
+
+def test_2d_string_x_keeps_automatic_ticks(tmp_path):
+    """String X dimension → no numeric ticks (categorical auto ticks)."""
+    csv1 = create_bench_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    presenter._available_csvs = [csv1]
+    presenter._visible_csvs = [csv1]
+    presenter._on_file_select([0])
+
+    window._mode_3d = 0
+    window._axis_x = "params"  # string-valued ('70B', ...)
+
+    with patch('presenter.plotter_presenter.render_2d',
+               return_value=MagicMock()) as mock_render:
+        with patch.object(window.plot_view, 'render'):
+            presenter._render_plot()
+            _, kwargs = mock_render.call_args
+            assert kwargs.get('x_ticks') is None
+
+
+def test_3d_render_receives_measured_xy_ticks(tmp_path):
+    """3D render gets ticks at the actually measured X/Y values."""
+    csv1 = _create_grid_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    presenter._available_csvs = [csv1]
+    presenter._visible_csvs = [csv1]
+    presenter._on_file_select([0])
+
+    window._mode_3d = 1
+    window._axis_x = "n_batch"
+    window._axis_y = "n_gpu_layers"
+
+    with patch('presenter.plotter_presenter.render_3d',
+               return_value=(MagicMock(), _mock_3d_ax())) as mock_render:
+        with patch.object(window.plot_view, 'render'):
+            presenter._render_plot()
+            _, kwargs = mock_render.call_args
+            assert kwargs.get('x_ticks') == [(512.0, "512"), (1024.0, "1024")]
+            assert kwargs.get('y_ticks') == [(32.0, "32"), (64.0, "64")]

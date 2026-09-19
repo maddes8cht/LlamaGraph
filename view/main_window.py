@@ -69,6 +69,8 @@ class MainWindow:
         self._show_level_var = tk.IntVar(value=0)
         self._level_val_var = tk.IntVar(value=50)
         self._subdiv_var = tk.IntVar(value=0)
+        self._interp_var = tk.StringVar(value="Cubic")
+        self._mask_var = tk.IntVar(value=0)
         self._axis_x_var = tk.StringVar()
         self._axis_y_var = tk.StringVar()
 
@@ -162,6 +164,34 @@ class MainWindow:
             font=('Segoe UI', 9),
         ).pack(side=tk.LEFT, padx=10)
 
+        chk(" Lev", self._show_level_var, '#9cdcfe', self._on_render).pack(
+            side=tk.LEFT, padx=5)
+        self._btn_level_down = tk.Button(
+            bar, text="◀", command=lambda: self._on_level_step(-1),
+            bg='#3a3a3a', fg=COLORS['fg'],
+            relief=tk.FLAT, cursor='hand2',
+            font=('Segoe UI', 8), width=3,
+            activebackground=COLORS['accent'], activeforeground='white',
+        )
+        self._btn_level_down.pack(side=tk.LEFT, padx=1)
+        self._ent_level = tk.Entry(
+            bar, width=4, justify='center',
+            bg='#2d2d2d', fg=COLORS['fg'], insertbackground=COLORS['fg'],
+            relief=tk.FLAT, font=('Consolas', 9),
+        )
+        self._ent_level.insert(0, str(self._level_val_var.get()))
+        self._ent_level.bind('<Return>', lambda _e: self._commit_level_entry())
+        self._ent_level.bind('<FocusOut>', lambda _e: self._commit_level_entry())
+        self._ent_level.pack(side=tk.LEFT, padx=1)
+        self._btn_level_up = tk.Button(
+            bar, text="▶", command=lambda: self._on_level_step(1),
+            bg='#3a3a3a', fg=COLORS['fg'],
+            relief=tk.FLAT, cursor='hand2',
+            font=('Segoe UI', 8), width=3,
+            activebackground=COLORS['accent'], activeforeground='white',
+        )
+        self._btn_level_up.pack(side=tk.LEFT, padx=(1, 5))
+
     # ── 3-D settings toolbar ──────────────────────────────────────────────────
 
     def _build_3d_toolbar(self, parent: tk.Widget) -> None:
@@ -214,20 +244,16 @@ class MainWindow:
         lbl(" SubDiv:").pack(side=tk.LEFT, padx=2)
         combo(self._subdiv_var, [0, 1, 2, 3, 4], width=3).pack(side=tk.LEFT, padx=2)
 
+        lbl(" Interp:").pack(side=tk.LEFT, padx=2)
+        # No "Linear+Clamp": linear interpolation cannot leave the
+        # measured range, so clamping would be a no-op for it.
+        combo(self._interp_var, ["Cubic", "Cubic+Clamp", "Linear"], width=12).pack(side=tk.LEFT, padx=2)
+
+        chk(" Mask", self._mask_var, '#cccccc').pack(side=tk.LEFT, padx=2)
+
         chk(" Wire", self._show_wireframe_var, '#cccccc').pack(side=tk.LEFT, padx=2)
         chk(" Err", self._show_errors_3d, '#f44747').pack(side=tk.LEFT, padx=2)
         chk(" Proj", self._show_projections_var, '#569cd6').pack(side=tk.LEFT, padx=2)
-        chk(" Lev", self._show_level_var, '#9cdcfe').pack(side=tk.LEFT, padx=2)
-
-        self._sld_level = tk.Scale(
-            bar, from_=0, to=100, orient=tk.HORIZONTAL, length=70,
-            variable=self._level_val_var,
-            command=lambda _: self._on_render(),
-            bg=COLORS['bg'], fg=COLORS['fg'],
-            highlightthickness=0, sliderrelief=tk.FLAT,
-            font=('Segoe UI', 7),
-        )
-        self._sld_level.pack(side=tk.LEFT, padx=2)
 
         # Store controls that need state management
         self._3d_controls = [
@@ -243,6 +269,43 @@ class MainWindow:
     def _on_toggle_3d(self) -> None:
         if self._toggle_3d_cb:
             self._toggle_3d_cb()
+
+    def _on_level_step(self, delta: int) -> None:
+        """Nudge the level value by *delta* (±1 via the arrow buttons)."""
+        self._set_level_value(self._level_val_var.get() + delta)
+
+    def _commit_level_entry(self) -> None:
+        """Take over a manually typed level value (clamped to 0-100)."""
+        try:
+            value = int(self._ent_level.get().strip())
+        except (ValueError, TypeError, AttributeError):
+            value = self._level_val_var.get()
+        self._set_level_value(value)
+
+    def _set_level_value(self, value: int) -> None:
+        """
+        Store a clamped level value and sync the entry.
+
+        Re-renders only when the value actually changed: stepping
+        against a bound, focus passthrough, or garbage revert must not
+        rebuild the (potentially subdivided) 3-D figure for nothing.
+        TclError-safe for teardown while the entry has focus.
+        """
+        try:
+            entry_text = self._ent_level.get()
+        except tk.TclError:
+            return  # widget gone (teardown) — nothing to sync
+        clamped = max(0, min(100, int(value)))
+        changed = (clamped != self._level_val_var.get())
+        self._level_val_var.set(clamped)
+        if entry_text.strip() != str(clamped):
+            try:
+                self._ent_level.delete(0, tk.END)
+                self._ent_level.insert(0, str(clamped))
+            except tk.TclError:
+                return
+        if changed:
+            self._on_render()
 
     # Presenter injects these
     _render_cb: Optional[Callable] = None
@@ -346,6 +409,14 @@ class MainWindow:
     @property
     def subdiv_level(self) -> int:
         return int(self._subdiv_var.get())
+
+    @property
+    def interp_method(self) -> str:
+        return self._interp_var.get()
+
+    @property
+    def mask_gaps(self) -> bool:
+        return bool(self._mask_var.get())
 
     @property
     def surface_style(self) -> str:
