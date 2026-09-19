@@ -60,7 +60,8 @@ class MainWindow:
         show_surface: bool = True,
         surface_style: str = "Solid",
         show_wireframe: bool = False,
-        show_projections: bool = False,
+        show_projections: Optional[bool] = None,
+        projection_mode: str = "none",
         show_errors: bool = True,
         dolly: bool = True,
         z_label_mode: str = "both-norm",
@@ -86,7 +87,15 @@ class MainWindow:
         self._show_surface = tk.IntVar(value=1 if show_surface else 0)
         self._surface_style_var = tk.StringVar(value=surface_style)
         self._show_wireframe_var = tk.IntVar(value=1 if show_wireframe else 0)
-        self._show_projections_var = tk.IntVar(value=1 if show_projections else 0)
+        # Legacy boolean maps onto the mode (True -> "back"); an
+        # explicit projection_mode wins when both are given.
+        mode = (projection_mode or "none").strip().lower() \
+            if isinstance(projection_mode, str) else "none"
+        if mode not in ("none", "back", "front", "both"):
+            mode = "none"
+        if show_projections is True and mode == "none":
+            mode = "back"
+        self._proj_mode_var = tk.StringVar(value=mode)
         self._show_errors_3d = tk.IntVar(value=1 if show_errors else 0)
         self._dolly_var = tk.IntVar(value=1 if dolly else 0)
         self._z_label_mode = tk.StringVar(value=z_label_mode)
@@ -277,7 +286,10 @@ class MainWindow:
 
         chk(" Wire", self._show_wireframe_var, '#cccccc').pack(side=tk.LEFT, padx=2)
         chk(" Err", self._show_errors_3d, '#f44747').pack(side=tk.LEFT, padx=2)
-        chk(" Proj", self._show_projections_var, '#569cd6').pack(side=tk.LEFT, padx=2)
+
+        lbl(" Proj:").pack(side=tk.LEFT, padx=(2, 0))
+        combo(self._proj_mode_var, ["none", "back", "front", "both"],
+              width=6).pack(side=tk.LEFT, padx=2)
 
         tk.Checkbutton(
             bar, text=" Dolly", variable=self._dolly_var,
@@ -440,8 +452,13 @@ class MainWindow:
         return bool(self._show_wireframe_var.get())
 
     @property
+    def projection_mode(self) -> str:
+        mode = self._proj_mode_var.get().strip().lower()
+        return mode if mode in ("none", "back", "front", "both") else "none"
+
+    @property
     def show_projections(self) -> bool:
-        return bool(self._show_projections_var.get())
+        return self.projection_mode != "none"
 
     @property
     def show_errors_3d(self) -> bool:

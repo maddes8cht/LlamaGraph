@@ -650,7 +650,7 @@ class PlotterPresenter:
         interp_method = interp_raw[:-len("+Clamp")] if clamp_surface else interp_raw
         sig = (x_param, y_param, normalize, scale_pct,
                self._show_ts, show_pp, show_tg, interp_raw, mask_gaps,
-               self._win.subdiv_level)
+               self._win.subdiv_level, self._win.projection_mode)
         scale_changed = (sig != self._last_3d_signature)
         if scale_changed:
             self._cam_3d = None
@@ -691,7 +691,7 @@ class PlotterPresenter:
             z_label_mode=self._win.z_label_mode,
             show_surface=self._win.show_surface,
             show_wireframe=self._win.show_wireframe,
-            show_projections=self._win.show_projections,
+            projection_mode=self._win.projection_mode,
             show_errors_3d=self._win.show_errors_3d,
             show_level=self._win.show_level,
             level_val=self._win.level_val,

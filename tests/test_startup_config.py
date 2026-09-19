@@ -189,8 +189,8 @@ def test_main_config_3d_start_state(tmp_path):
                    "show_level: true\nlevel_value: 75\n"
                    "surface_style: Colormap\nsubdiv_level: 2\n"
                    "interp_method: Linear\nmask_gaps: true\n"
-                   "show_wireframe: true\nshow_errors: false\n"
-                   "show_projections: true\ndolly: false\n"
+                    "show_wireframe: true\nshow_errors: false\n"
+                    "projection_mode: back\ndolly: false\n"
                    "z_label_mode: '%'\nunify: true\n"
                    "show_pp: false\nsurface_visible: false\n")
     mw = MagicMock()
@@ -213,7 +213,7 @@ def test_main_config_3d_start_state(tmp_path):
         assert wkwargs['mask_gaps'] is True
         assert wkwargs['show_wireframe'] is True
         assert wkwargs['show_errors'] is False
-        assert wkwargs['show_projections'] is True
+        assert wkwargs['projection_mode'] == "back"
         assert wkwargs['dolly'] is False
         assert wkwargs['z_label_mode'] == "%"
         assert wkwargs['unify'] is True

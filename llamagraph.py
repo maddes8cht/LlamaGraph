@@ -36,6 +36,7 @@ from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
 from utils.csv_parser import is_llama_bench_csv, is_llama_bench_md
 from utils.startup_config import (
     INTERP_METHODS,
+    PROJECTION_MODES,
     SURFACE_STYLES,
     Z_LABEL_MODES,
     effective_value,
@@ -124,7 +125,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="Show 3D error bars at startup (or not)")
     parser.add_argument('--projections', dest='show_projections',
                         action=argparse.BooleanOptionalAction, default=None,
-                        help="Show 3D projections at startup (or not)")
+                        help="Deprecated: use --projection-mode (true maps "
+                             "to 'back', false to 'none')")
+    parser.add_argument('--projection-mode', dest='projection_mode',
+                        choices=list(PROJECTION_MODES), default=None,
+                        help="3D wall projections at startup")
     parser.add_argument('--dolly', dest='dolly',
                         action=argparse.BooleanOptionalAction, default=None,
                         help="Use dolly (roll-locked) rotation at startup (or not)")
@@ -219,7 +224,7 @@ def resolve_startup(args: argparse.Namespace) -> tuple[dict, Optional[Path]]:
     }
     tri_bool_keys = ("normalize", "mode_3d", "show_level",
                      "surface_visible", "mask_gaps", "show_wireframe",
-                     "show_errors", "show_projections", "dolly",
+                     "show_errors", "dolly",
                      "unify", "show_pp", "show_tg")
     for key in tri_bool_keys:
         cli_value = getattr(args, key, None)
@@ -227,6 +232,18 @@ def resolve_startup(args: argparse.Namespace) -> tuple[dict, Optional[Path]]:
             settings[key] = bool(cli_value)
         else:
             settings[key] = effective_value(None, config, key)
+
+    # Projection mode: explicit --projection-mode wins, then legacy
+    # --projections/--no-projections, then config (incl. legacy
+    # show_projections boolean), then the built-in default.
+    if args.projection_mode is not None:
+        settings["projection_mode"] = args.projection_mode
+    elif getattr(args, "show_projections", None) is not None:
+        settings["projection_mode"] = \
+            "back" if args.show_projections else "none"
+    else:
+        settings["projection_mode"] = effective_value(
+            None, config, "projection_mode")
 
     if args.level_value is not None:
         settings["level_value"] = _check_int_range(
@@ -296,7 +313,7 @@ def main() -> None:
         show_surface=settings["surface_visible"],
         surface_style=settings["surface_style"],
         show_wireframe=settings["show_wireframe"],
-        show_projections=settings["show_projections"],
+        projection_mode=settings["projection_mode"],
         show_errors=settings["show_errors"],
         dolly=settings["dolly"],
         z_label_mode=settings["z_label_mode"],

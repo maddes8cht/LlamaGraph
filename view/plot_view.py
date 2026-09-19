@@ -681,7 +681,8 @@ def render_3d(
     z_label_mode: str = "both-norm",
     show_surface: bool = True,
     show_wireframe: bool = False,
-    show_projections: bool = False,
+    show_projections: Optional[bool] = None,
+    projection_mode: str = "none",
     show_errors_3d: bool = True,
     show_level: bool = False,
     level_val: int = 50,
@@ -739,8 +740,21 @@ def render_3d(
     x_ticks / y_ticks:
         Optional (position, label) pairs showing the actually measured
         values on X/Y instead of automatic decimal ticks.
+    projection_mode:
+        "none" (no projections), "back" (walls at y=max / x=min),
+        "front" (walls at y=min / x=max), or "both" (all four walls).
+        Walls are data-fixed with the home view as reference, never
+        camera-relative. The legacy *show_projections* boolean maps
+        True to "back" when no explicit mode is given.
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    mode = (projection_mode or "none").strip().lower() \
+        if isinstance(projection_mode, str) else "none"
+    if mode not in ("none", "back", "front", "both"):
+        mode = "none"
+    if show_projections is True and mode == "none":
+        mode = "back"
 
     bg = COLORS['bg'] if dark_mode else 'white'
     fig = Figure(figsize=(11, 7), facecolor=bg)
@@ -758,8 +772,24 @@ def render_3d(
     all_ys = [p[1] for p in all_pts]
     all_zs = [p[2] for p in all_pts]
 
+    # Data-fixed projection walls with the home view as reference:
+    # back = y/max + x/min, front = y/min + x/max, both = all four.
     max_y_wall = max(all_ys) if all_ys else 0
+    min_y_wall = min(all_ys) if all_ys else 0
     min_x_wall = min(all_xs) if all_xs else 0
+    max_x_wall = max(all_xs) if all_xs else 0
+    if mode == "back":
+        y_walls = [max_y_wall]
+        x_walls = [min_x_wall]
+    elif mode == "front":
+        y_walls = [min_y_wall]
+        x_walls = [max_x_wall]
+    elif mode == "both":
+        y_walls = [min_y_wall, max_y_wall]
+        x_walls = [min_x_wall, max_x_wall]
+    else:
+        y_walls = []
+        x_walls = []
 
     cmap_pp = LinearSegmentedColormap.from_list(
         "custom_pp", [COLORS['bg'], pp_color, "#ffffff"]
@@ -825,12 +855,19 @@ def render_3d(
         if infos:
             sc._llama_records = list(infos)
 
-        # Wall projections
-        if show_projections:
-            ax.plot(xs, zs, zs=max_y_wall, zdir='y',
-                    color=color, linestyle='--', marker=marker, markersize=4, alpha=0.5)
-            ax.plot(ys, zs, zs=min_x_wall, zdir='x',
-                    color=color, linestyle=':', marker=marker, markersize=4, alpha=0.5)
+        # Row-wise wall projections (see _draw_wall_projections):
+        # each constant-y row is drawn on every active Y wall, each
+        # constant-x row on every active X wall; rows are never
+        # connected across.
+        if mode != "none":
+            _draw_wall_projections(
+                ax, list(pts), color, marker,
+                y_walls=y_walls, x_walls=x_walls,
+                x_span=(max(all_xs) - min(all_xs)) if len(set(all_xs)) > 1 else 0.0,
+                y_span=(max(all_ys) - min(all_ys)) if len(set(all_ys)) > 1 else 0.0,
+                cap_x=(max(all_xs) - min(all_xs)) * 0.015 if len(set(all_xs)) > 1 else 0.5,
+                cap_y=(max(all_ys) - min(all_ys)) * 0.015 if len(set(all_ys)) > 1 else 0.5,
+            )
 
     plot_series(points_pp, pp_color, "PP", 'o', cmap_pp, infos_pp)
     plot_series(points_tg, tg_color, "TG", 's', cmap_tg, infos_tg)
@@ -1038,6 +1075,154 @@ def interp_surface_z(xs, ys, zs, x: float, y: float) -> Optional[float]:
     except (ValueError, TypeError):
         return None
     return value if math.isfinite(value) else None
+
+
+# Farthest projection rows are lightened towards white by up to this
+# fraction; the row touching the wall keeps the plain series color.
+PROJECTION_MAX_LIGHTEN = 0.65
+
+
+def _mix_towards_white(base_hex: str, amount: float) -> str:
+    """Lighten *base_hex* towards white by *amount* (0 = unchanged, 1 = white)."""
+    try:
+        amt = max(0.0, min(1.0, float(amount)))
+    except (TypeError, ValueError):
+        return base_hex
+    try:
+        r = int(base_hex[1:3], 16) / 255.0
+        g = int(base_hex[3:5], 16) / 255.0
+        b = int(base_hex[5:7], 16) / 255.0
+    except (ValueError, IndexError, TypeError, AttributeError):
+        return base_hex
+    r += (1.0 - r) * amt
+    g += (1.0 - g) * amt
+    b += (1.0 - b) * amt
+    return f'#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}'
+
+
+def _projection_row_color(base_hex: str, distance: float, span: float) -> str:
+    """
+    Depth-shaded color for one projection row.
+
+    *distance* is the wall gap (0 at the wall), *span* the full axis span;
+    the nearest row keeps the base color, farther rows are progressively
+    lightened towards white. A zero span yields the base color. Never raises.
+    """
+    try:
+        if not span or span <= 0:
+            return base_hex
+        t = max(0.0, min(1.0, float(distance) / float(span)))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return base_hex
+    return _mix_towards_white(base_hex, t * PROJECTION_MAX_LIGHTEN)
+
+
+def _draw_wall_projections(
+    ax,
+    pts: list[tuple],
+    color: str,
+    marker: str,
+    y_walls: list[float],
+    x_walls: list[float],
+    x_span: float,
+    y_span: float,
+    cap_x: float,
+    cap_y: float,
+    y_wall: Optional[float] = None,
+    x_wall: Optional[float] = None,
+) -> None:
+    """
+    Row-wise projections of measured points onto the side walls.
+
+    Each constant-y row is connected (sorted by x) on every active Y
+    wall; each constant-x row is connected (sorted by y) on every
+    active X wall. Rows are never connected across, and single-point
+    rows draw only a marker. Every projected point carries its own
+    vertical (Z) error bar with a small in-plane cap. Row colors encode
+    wall distance: the row touching a wall uses *color*, farther rows
+    are progressively lightened. The legacy single-wall keywords
+    (*y_wall*/*x_wall*) map to one-element wall lists. Best effort —
+    never raises.
+    """
+    if not pts:
+        return
+    if y_wall is not None and not y_walls:
+        y_walls = [y_wall]
+    if x_wall is not None and not x_walls:
+        x_walls = [x_wall]
+    if not y_walls and not x_walls:
+        return
+    try:
+        rows_y: dict = {}
+        rows_x: dict = {}
+        for pt in pts:
+            try:
+                x, y, z, err = pt
+            except (TypeError, ValueError):
+                continue
+            rows_y.setdefault(y, []).append((x, z, err))
+            rows_x.setdefault(x, []).append((y, z, err))
+
+        for wall in y_walls:
+            # Farthest rows first so the darkest (nearest-wall) row
+            # paints last: ascending when the wall is at max y,
+            # descending when it is at min y.
+            wall_is_max = wall >= max(rows_y) if rows_y else True
+            ordered = sorted(rows_y) if wall_is_max else sorted(
+                rows_y, reverse=True)
+            for y_val in ordered:
+                members = sorted(rows_y[y_val], key=lambda m: (m[0], m[1]))
+                xs = [m[0] for m in members]
+                zs = [m[1] for m in members]
+                row_color = _projection_row_color(
+                    color, abs(wall - y_val), y_span)
+                yw = [wall] * len(xs)
+                style = '-' if len(members) >= 2 else 'None'
+                ax.plot(xs, yw, zs, color=row_color,
+                        linestyle=style, linewidth=1.2,
+                        marker=marker, markersize=4, alpha=0.9)
+                for x, z, err in members:
+                    try:
+                        lo, hi = z - err, z + err
+                    except TypeError:
+                        continue
+                    ax.plot([x, x], [wall, wall], [lo, hi],
+                            color=row_color, linewidth=1.2, alpha=0.9)
+                    for z_cap in (lo, hi):
+                        ax.plot([x - cap_x, x + cap_x],
+                                [wall, wall], [z_cap, z_cap],
+                                color=row_color, linewidth=1.0, alpha=0.9)
+
+        for wall in x_walls:
+            # Same farthest-first rule along x: descending when the
+            # wall is at min x, ascending when it is at max x.
+            wall_is_min = wall <= min(rows_x) if rows_x else True
+            ordered = sorted(rows_x, reverse=True) if wall_is_min else sorted(
+                rows_x)
+            for x_val in ordered:
+                members = sorted(rows_x[x_val], key=lambda m: (m[0], m[1]))
+                ys = [m[0] for m in members]
+                zs = [m[1] for m in members]
+                row_color = _projection_row_color(
+                    color, abs(x_val - wall), x_span)
+                xw = [wall] * len(ys)
+                style = '-' if len(members) >= 2 else 'None'
+                ax.plot(xw, ys, zs, color=row_color,
+                        linestyle=style, linewidth=1.2,
+                        marker=marker, markersize=4, alpha=0.9)
+                for y, z, err in members:
+                    try:
+                        lo, hi = z - err, z + err
+                    except TypeError:
+                        continue
+                    ax.plot([wall, wall], [y, y], [lo, hi],
+                            color=row_color, linewidth=1.2, alpha=0.9)
+                    for z_cap in (lo, hi):
+                        ax.plot([wall, wall],
+                                [y - cap_y, y + cap_y], [z_cap, z_cap],
+                                color=row_color, linewidth=1.0, alpha=0.9)
+    except Exception as exc:
+        print(f"[PlotView] Wall projections skipped: {exc}")
 
 
 def _series_face_colors(triangles, x, y, z, color, cmap, style, light):

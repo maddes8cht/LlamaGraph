@@ -527,7 +527,7 @@ class TestRender3D:
         assert len(surf_collections) >= 1
 
     def test_projection_lines(self):
-        """show_projections=True → extra lines for wall projections."""
+        """Legacy show_projections=True → extra lines for wall projections."""
         points_pp = [(1.0, 2.0, 100.0, 5.0),
                      (2.0, 3.0, 110.0, 5.0)]
         fig, ax = render_3d(
@@ -541,6 +541,32 @@ class TestRender3D:
         )
         # Projections add extra lines beyond the error bars
         assert len(ax.lines) >= 2
+
+    def test_projection_modes(self):
+        """projection_mode selects none/back/front/both walls."""
+        grid = [(1.0, 2.0, 100.0, 5.0), (2.0, 2.0, 110.0, 5.0),
+                (1.0, 3.0, 120.0, 5.0), (2.0, 3.0, 130.0, 5.0)]
+        kwargs: dict = dict(
+            points_tg=[],
+            x_param="x",
+            y_param="y",
+            pp_color="#ff0000",
+            tg_color="#00ff00",
+            show_errors_3d=False,
+            show_surface=False,
+        )
+        _, ax_none = render_3d(points_pp=grid, projection_mode="none", **kwargs)
+        _, ax_back = render_3d(points_pp=grid, projection_mode="back", **kwargs)
+        _, ax_front = render_3d(points_pp=grid, projection_mode="front", **kwargs)
+        _, ax_both = render_3d(points_pp=grid, projection_mode="both", **kwargs)
+        n_none = len(ax_none.lines)
+        n_back = len(ax_back.lines)
+        n_front = len(ax_front.lines)
+        n_both = len(ax_both.lines)
+        assert n_back > n_none
+        assert n_front > n_none
+        assert n_both > n_back
+        assert n_both > n_front
 
     def test_z_label_percent_mode(self):
         """z_label_mode='%' → zlim set to (0, 100)."""
