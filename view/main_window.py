@@ -142,7 +142,7 @@ class MainWindow:
         self._unify_chk.pack(side=tk.LEFT, padx=5)
 
         self._toggle_btn = tk.Button(
-            bar, text="Switch: t/s",
+            bar, text="t/s → time",
             bg=COLORS['accent'], fg='white', relief=tk.FLAT,
             cursor='hand2', font=('Segoe UI', 9),
         )

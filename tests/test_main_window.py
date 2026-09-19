@@ -191,8 +191,8 @@ class TestUISetters:
         """set_metric_button_text updates toggle button text."""
         from view.main_window import MainWindow
         mw = MainWindow(tk_root)
-        mw.set_metric_button_text("Switch: ns")
-        assert mw._toggle_btn.cget("text") == "Switch: ns"
+        mw.set_metric_button_text("t/s → time")
+        assert mw._toggle_btn.cget("text") == "t/s → time"
 
 
 # ── Key bindings ────────────────────────────────────────────────────────

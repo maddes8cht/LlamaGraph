@@ -265,6 +265,7 @@ def render_2d(
     dark_mode: bool = True,
     normalize: bool = False,
     z_label_mode: str = "%",
+    show_ts: bool = True,
     x_ticks: Optional[list[tuple]] = None,
 ) -> Figure:
     """
@@ -291,7 +292,7 @@ def render_2d(
         ax.set_xticklabels([l for _, l in x_ticks])
 
     scale_pct = (z_label_mode == "%")
-    show_ts_label = "Tokens/s"
+    show_ts_label = "Tokens/s" if show_ts else "Time (ns)"
     y_label_pp = f"PP Performance (%)" if (normalize and scale_pct) else f"PP {show_ts_label}"
     ax.set_ylabel(y_label_pp, color=pp_base, fontweight='bold')
 
@@ -311,9 +312,9 @@ def render_2d(
         pp_pts = [p for p in series_data['pp'] if show_pp_flags[p['file_idx']]]
         tg_pts = [p for p in series_data['tg'] if show_tg_flags[p['file_idx']]]
 
-        _draw_unified(ax, pp_pts, pp_base, "Unified PP", '-', handles)
+        _draw_unified(ax, pp_pts, pp_base, "Unified PP", '-', handles, "pp")
         if ax_tg:
-            _draw_unified(ax_tg, tg_pts, tg_base, "Unified TG", '--', handles)
+            _draw_unified(ax_tg, tg_pts, tg_base, "Unified TG", '--', handles, "tg")
     else:
         # --- Per-file mode ---
         n_files = len(datasets_raw)
@@ -341,7 +342,7 @@ def render_2d(
                     markersize=6, picker=5,
                 )
                 handles.append(ln)
-                _attach_records(ln, pp_pts, f"PP: {fname}")
+                _attach_records(ln, pp_pts, f"PP: {fname}", "pp")
 
             if ax_tg and show_tg_flags[i] and tg_pts:
                 ln = ax_tg.errorbar(
@@ -352,7 +353,7 @@ def render_2d(
                     markersize=6, picker=5,
                 )
                 handles.append(ln)
-                _attach_records(ln, tg_pts, f"TG: {fname}")
+                _attach_records(ln, tg_pts, f"TG: {fname}", "tg")
 
     if handles:
         ax.legend(
@@ -380,13 +381,16 @@ def render_2d(
     return fig
 
 
-def _point_record(p: dict, label: Optional[str] = None) -> dict:
+def _point_record(p: dict, label: Optional[str] = None,
+                  series: Optional[str] = None) -> dict:
     """
     Tooltip payload for one 2-D series point (drawn order).
 
     The series label rides along because errorbar() keeps it on the
     container (for the legend) while the pickable data line itself
-    stays at the default "_no_legend_".
+    stays at the default "_no_legend_". 'series' ('pp'/'tg') and
+    'file_idx' allow the presenter to find the counterpart point of
+    the other series for combined tooltips.
     """
     rec = {
         'x': p.get('x'),
@@ -399,6 +403,12 @@ def _point_record(p: dict, label: Optional[str] = None) -> dict:
         label = p.get('label')
     if label is not None:
         rec['label'] = label
+    if series is None:
+        series = p.get('series')
+    if series is not None:
+        rec['series'] = series
+    if p.get('file_idx') is not None:
+        rec['file_idx'] = p.get('file_idx')
     return rec
 
 
@@ -467,7 +477,8 @@ def _disable_pick_recursive(artist) -> None:
         pass
 
 
-def _attach_records(container, pts: list[dict], label: Optional[str] = None) -> None:
+def _attach_records(container, pts: list[dict], label: Optional[str] = None,
+                    series: Optional[str] = None) -> None:
     """
     Stash per-point tooltip records on the drawn data line, in drawn
     order, so the pick handler can show values without reverse lookup.
@@ -480,7 +491,7 @@ def _attach_records(container, pts: list[dict], label: Optional[str] = None) -> 
     except (IndexError, TypeError, AttributeError):
         return
     try:
-        data_line._llama_records = [_point_record(p, label) for p in pts]
+        data_line._llama_records = [_point_record(p, label, series) for p in pts]
     except (AttributeError, TypeError):
         pass
     try:
@@ -495,13 +506,14 @@ def _attach_records(container, pts: list[dict], label: Optional[str] = None) -> 
         pass
 
 
-def _average_bucket(xv, members: list[dict]) -> tuple:
+def average_bucket(xv, members: list[dict]) -> tuple:
     """
     Average one x-bucket into drawn values plus a tooltip record.
 
     Returns (y, err, record) where err uses RMS combination (same as
     the drawn error bar) and the record carries averaged ts/ns with
-    RMS-combined errors, so the tooltip explains the bar.
+    RMS-combined errors, so the tooltip explains the bar. Shared with
+    the presenter, which averages unified counterparts the same way.
     """
     means = [v['y'] for v in members]
     errs = [v['err'] for v in members]
@@ -518,24 +530,29 @@ def _average_bucket(xv, members: list[dict]) -> tuple:
     return y, err, rec
 
 
-def _draw_unified(ax, pts, color, label, linestyle, handles):
+def _draw_unified(ax, pts, color, label, linestyle, handles, series=None):
     """
     Helper: collect all per-file points, average by x, draw one line.
     Returns tooltip records in drawn order (averaged ts/ns included).
+    *series* ('pp'/'tg') is stored in the records; derived from the
+    label when omitted (production callers pass it explicitly).
     """
     if not pts:
         return []
+    if series is None:
+        series = 'pp' if 'PP' in (label or '') else 'tg'
     from collections import defaultdict
     buckets: dict = defaultdict(list)
     for p in pts:
         buckets[p['x']].append(p)
     xs, ys, es, records = [], [], [], []
     for xv, members in sorted(buckets.items()):
-        y, err, rec = _average_bucket(xv, members)
+        y, err, rec = average_bucket(xv, members)
         xs.append(xv)
         ys.append(y)
         es.append(err)
         rec['label'] = label
+        rec['series'] = series
         records.append(rec)
     ln = ax.errorbar(
         xs, ys, yerr=es, label=label, color=color,

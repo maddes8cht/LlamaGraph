@@ -395,7 +395,7 @@ class TestDrawUnified:
         assert ydata[1] == 200.0
 
 
-# ── _average_bucket ────────────────────────────────────────────────────────
+# ── average_bucket ────────────────────────────────────────────────────────
 
 
 class TestAverageBucket:
@@ -404,14 +404,14 @@ class TestAverageBucket:
     def test_rms_errors_match_drawn_bar(self):
         """ts/ns errors use the same RMS combination as y/err."""
         import math
-        from view.plot_view import _average_bucket
+        from view.plot_view import average_bucket
         members = [
             {'x': 1, 'y': 100.0, 'err': 3.0,
              'ts': 100.0, 'ts_err': 3.0, 'ns': 50000.0, 'ns_err': 1500.0},
             {'x': 1, 'y': 110.0, 'err': 4.0,
              'ts': 110.0, 'ts_err': 4.0, 'ns': 52000.0, 'ns_err': 2000.0},
         ]
-        y, err, rec = _average_bucket(1, members)
+        y, err, rec = average_bucket(1, members)
         assert y == pytest.approx(105.0)
         assert err == pytest.approx(math.sqrt(9 + 16) / 2)
         assert rec['ts_err'] == pytest.approx(math.sqrt(9 + 16) / 2)
@@ -419,8 +419,8 @@ class TestAverageBucket:
         assert rec['ts'] == pytest.approx(105.0)
 
     def test_missing_metrics_become_none(self):
-        from view.plot_view import _average_bucket
-        y, err, rec = _average_bucket(1, [{'x': 1, 'y': 100.0, 'err': 5.0}])
+        from view.plot_view import average_bucket
+        y, err, rec = average_bucket(1, [{'x': 1, 'y': 100.0, 'err': 5.0}])
         assert y == pytest.approx(100.0)
         assert rec['ts'] is None
         assert rec['ns'] is None
@@ -1243,6 +1243,24 @@ class TestValueTicksRender:
         )
         ax = fig.axes[0]
         assert len(ax.get_xticklabels()) > 0
+
+    def test_render_2d_ylabel_follows_metric(self):
+        """Y labels name Tokens/s vs. Time (ns) by metric."""
+        kw = dict(
+            datasets_raw=[{'path': Path('/f.csv')}],
+            series_data={'pp': [{'x': 512.0, 'y': 1.0, 'err': 0.0,
+                                 'file_idx': 0}],
+                         'tg': []},
+            x_param="n_batch",
+            pp_base="#ff0000",
+            tg_base="#00ff00",
+            show_pp_flags=[True],
+            show_tg_flags=[False],
+            do_unify=False,
+        )
+        assert render_2d(**kw).axes[0].get_ylabel() == "PP Tokens/s"
+        assert render_2d(show_ts=False, **kw).axes[0].get_ylabel() == \
+            "PP Time (ns)"
 
     def test_render_3d_applies_xy_ticks(self):
         """render_3d labels X/Y with the given measured values."""

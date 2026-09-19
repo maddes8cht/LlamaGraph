@@ -15,6 +15,7 @@ The Presenter is the only place that imports from both model/ and view/.
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,7 @@ from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
 from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
 from view.plot_view import (
+    average_bucket,
     interp_surface_z,
     thin_value_ticks,
     render_2d,
@@ -34,6 +36,7 @@ from view.plot_view import (
 TOOLTIP_ALPHA = 0.85
 TOOLTIP_BORDER = '#888888'
 TOOLTIP_TTL_MS = 6000
+TOOLTIP_SEPARATOR = "─" * 26
 
 
 class PlotterPresenter:
@@ -89,7 +92,7 @@ class PlotterPresenter:
         self._last_3d_signature: Optional[tuple] = None
 
         # Tooltip context (axis names + per-point payloads)
-        self._last_2d_x: str = ""
+        self._last_2d: dict = {}
         self._last_3d: dict = {}
         self._active_tip = None
         self._connector_line = None
@@ -466,7 +469,7 @@ class PlotterPresenter:
             self._render_plot()
 
     def _update_metric_button(self) -> None:
-        text = "Switch: ns" if self._show_ts else "Switch: t/s"
+        text = "t/s → time" if self._show_ts else "time → t/s"
         self._win.set_metric_button_text(text)
 
     # ── 3-D camera ────────────────────────────────────────────────────────────
@@ -553,8 +556,6 @@ class PlotterPresenter:
             self._win.plot_view.show_placeholder("⚠ No parameter axis available.")
             return
 
-        self._last_2d_x = x_param
-
         ls = self._win.left_sidebar
         n = self._model.get_dataset_count()
         show_pp_flags = [ls.get_pp_flag(i) and show_pp for i in range(n)]
@@ -569,6 +570,7 @@ class PlotterPresenter:
             normalize=normalize,
             scale_pct=scale_pct,
         )
+        self._last_2d = {'series': series_data, 'x_param': x_param}
 
         fig = render_2d(
             datasets_raw=self._model.get_datasets_raw(),
@@ -581,6 +583,7 @@ class PlotterPresenter:
             do_unify=self._win.unify,
             normalize=normalize,
             z_label_mode=self._win.z_label_mode,
+            show_ts=self._show_ts,
             x_ticks=thin_value_ticks(
                 [p['x'] for p in series_data['pp']
                  if show_pp_flags[p['file_idx']]]
@@ -715,28 +718,198 @@ class PlotterPresenter:
         return f"{value:g}"
 
     @staticmethod
-    def _fmt_ts(value, err) -> str:
+    def _fmt_uncertain(value, err, sig=2, grouping=False) -> tuple:
+        """
+        Value ± error strings with precision derived from the error.
+
+        The error is rounded to *sig* significant digits and the value
+        to the same decimal position, so the value never claims more
+        precision than its uncertainty supports (and the error never
+        carries a meaningless digit tail).
+        """
         if value is None:
-            return "n/a"
-        if err:
-            return f"{value:.4g} ± {err:.2g}"
-        return f"{value:.4g}"
+            return "n/a", None
+        if not err or not math.isfinite(err) or err <= 0 \
+                or not math.isfinite(value):
+            plain = f"{value:,.0f}" if grouping else f"{value:g}"
+            return plain, None
+        exp = math.floor(math.log10(abs(err))) - sig + 1
+        if exp >= 0:
+            if grouping:
+                return (f"{round(value, -exp):,.0f}",
+                        f"{round(err, -exp):,.0f}")
+            return f"{round(value, -exp):.0f}", f"{round(err, -exp):.0f}"
+        return (f"{round(value, -exp):.{-exp}f}",
+                f"{round(err, -exp):.{-exp}f}")
 
     @staticmethod
-    def _fmt_ns(value, err) -> str:
-        if value is None:
-            return "n/a"
-        if err:
-            return f"{value:,.0f} ± {err:,.0f}"
-        return f"{value:,.0f}"
+    def _ts_parts(record: dict) -> tuple:
+        """(value, error) strings for t/s; error None when absent."""
+        return PlotterPresenter._fmt_uncertain(
+            record.get('ts'), record.get('ts_err'))
 
     @staticmethod
-    def _metric_lines(record: dict) -> list[str]:
-        """Shared t/s + ns tooltip lines for a point record."""
-        return [
-            f"t/s: {PlotterPresenter._fmt_ts(record.get('ts'), record.get('ts_err'))}",
-            f"ns: {PlotterPresenter._fmt_ns(record.get('ns'), record.get('ns_err'))}",
-        ]
+    def _ns_unit(value: float) -> tuple:
+        """(factor, unit) scaling nanoseconds to a readable unit."""
+        magnitude = abs(value)
+        if magnitude >= 1e9:
+            return 1e-9, "s"
+        if magnitude >= 1e6:
+            return 1e-6, "ms"
+        if magnitude >= 1e3:
+            return 1e-3, "µs"
+        return 1.0, "ns"
+
+    @staticmethod
+    def _ns_parts(record: dict) -> tuple:
+        """(value, error) strings for latency, auto-scaled ns/µs/ms/s."""
+        value, err = record.get('ns'), record.get('ns_err')
+        if value is None:
+            return "n/a", None
+        factor, unit = PlotterPresenter._ns_unit(value)
+        val_str, err_str = PlotterPresenter._fmt_uncertain(
+            value * factor, err * factor if err else 0.0)
+        if err_str is None:
+            return f"{val_str} {unit}", None
+        return val_str, f"{err_str} {unit}"
+
+    @staticmethod
+    def _metric_rows(record: dict) -> list:
+        """Shared (name, value, error) rows for t/s and ns."""
+        ts_v, ts_e = PlotterPresenter._ts_parts(record)
+        ns_v, ns_e = PlotterPresenter._ns_parts(record)
+        return [("t/s:", ts_v, ts_e), ("time:", ns_v, ns_e)]
+
+    @staticmethod
+    def _tooltip_table(blocks: list) -> str:
+        """
+        Table-aligned tooltip text (monospace assumed).
+
+        *blocks* are {'header': str|None, 'rows': [(name, value,
+        error|None), ...], 'tag': str|None} dicts. Names share one
+        left-aligned column, values one right-aligned column, and
+        errors one right-aligned column after "±", across all blocks —
+        so ± signs sit exactly below each other.
+        """
+        names = [n for b in blocks for n, _, _ in b['rows']]
+        vals = [v for b in blocks for _, v, _ in b['rows']]
+        errs = [e for b in blocks for _, _, e in b['rows'] if e is not None]
+        name_w = max([len(n) for n in names] or [0])
+        val_w = max([len(v) for v in vals] or [0])
+        err_w = max([len(e) for e in errs] or [0])
+        out = []
+        for i, block in enumerate(blocks):
+            if i > 0:
+                out.append(TOOLTIP_SEPARATOR)
+            if block.get('header'):
+                out.append(block['header'])
+            for name, value, err in block['rows']:
+                line = f"{name:<{name_w}}  {value:>{val_w}}"
+                if err is not None:
+                    line += f"  ± {err:>{err_w}}"
+                out.append(line)
+            if block.get('tag'):
+                out.append(block['tag'])
+        return "\n".join(out)
+
+    @staticmethod
+    def _record_block(first, coord_rows: list, record: dict) -> dict:
+        """One tooltip block: header, coordinate rows, metric rows."""
+        rows = list(coord_rows) + PlotterPresenter._metric_rows(record)
+        tag = None
+        if isinstance(first, str) and "Unified" in first:
+            tag = "🔗 Combined"
+        return {'header': first, 'rows': rows, 'tag': tag}
+
+    @staticmethod
+    def _clean_label(label) -> Optional[str]:
+        """Usable label line or None for missing/default labels."""
+        if not isinstance(label, str) or not label or label.startswith("_"):
+            return None
+        return label
+
+    def _counterpart_label_2d(self, series: str, file_idx) -> str:
+        """Counterpart label matching render_2d's naming."""
+        if file_idx is None:
+            return "Unified PP" if series == 'pp' else "Unified TG"
+        try:
+            stem = Path(
+                self._model.get_datasets_raw()[file_idx]['path']).stem
+        except (IndexError, KeyError, TypeError):
+            stem = "?"
+        return f"PP: {stem}" if series == 'pp' else f"TG: {stem}"
+
+    def _counterpart_visible_2d(self, series: str, file_idx) -> bool:
+        """Whether the counterpart series is currently displayed."""
+        ls = self._win.left_sidebar
+        if series == 'pp':
+            per_file = ls.get_pp_flag(file_idx) if file_idx is not None else True
+            return bool(self._win.show_pp and per_file)
+        per_file = ls.get_tg_flag(file_idx) if file_idx is not None else True
+        return bool(self._win.show_tg and per_file)
+
+    def _find_counterpart_2d(self, rec: dict):
+        """
+        Counterpart point of the other series at the same x value.
+
+        Returns (label, record) or None. Per-file points match within
+        the same file; unified lines (no file_idx) average the other
+        series across all *displayed* files with the same math the
+        unified line itself uses. Only displayed series qualify, and
+        only on exact x match — no nearest-point guessing.
+        """
+        series = rec.get('series')
+        other = 'tg' if series == 'pp' else 'pp' if series == 'tg' else None
+        if other is None:
+            return None
+        file_idx = rec.get('file_idx')
+        cands = [p for p in (self._last_2d.get('series') or {}).get(other, [])
+                 if p.get('x') == rec.get('x')]
+        if file_idx is not None:
+            cands = [p for p in cands if p.get('file_idx') == file_idx]
+            if not cands or not self._counterpart_visible_2d(other, file_idx):
+                return None
+            return self._counterpart_label_2d(other, file_idx), cands[0]
+        # Unified: average across displayed files only (mirrors the line).
+        visible = [p for p in cands
+                   if self._counterpart_visible_2d(other, p.get('file_idx'))]
+        if not visible:
+            return None
+        _, _, avg_rec = average_bucket(rec.get('x'), visible)
+        avg_rec['label'] = self._counterpart_label_2d(other, None)
+        avg_rec['series'] = other
+        return avg_rec['label'], avg_rec
+
+    def _find_counterpart_3d(self, label: str, ind: int):
+        """
+        Counterpart info of the other series at the same (x, y).
+
+        Returns (label, info) or None when the other series is hidden
+        or has no point at exactly that position. Points carry no file
+        identity, so with several loaded files sharing an (x, y) the
+        first hit wins even across files — accepted: combined 3-D
+        tooltips compare positions, not file provenance.
+        """
+        series = 'pp' if label == 'PP' else 'tg' if label == 'TG' else None
+        if series is None:
+            return None
+        other = 'tg' if series == 'pp' else 'pp'
+        if other == 'pp' and not self._win.show_pp:
+            return None
+        if other == 'tg' and not self._win.show_tg:
+            return None
+        points = self._last_3d.get('points', {}) or {}
+        infos = self._last_3d.get('infos', {}) or {}
+        own = points.get(series) or []
+        if not (0 <= ind < len(own)):
+            return None
+        x, y = own[ind][0], own[ind][1]
+        others = points.get(other) or []
+        other_infos = infos.get(other) or []
+        for j, q in enumerate(others):
+            if q[0] == x and q[1] == y and j < len(other_infos):
+                return ('PP' if other == 'pp' else 'TG'), other_infos[j]
+        return None
 
     def _show_tooltip(self, text: str) -> None:
         # One tooltip at a time: drop the previous one so rapid picks
@@ -797,29 +970,31 @@ class PlotterPresenter:
             # Series label rides in the record: errorbar() keeps it on
             # the container (for the legend) while the pickable data
             # line itself stays at the default "_no_legend_".
-            first = rec.get('label') or label
-            if not isinstance(first, str) or first.startswith("_"):
-                first = None
-            x_title = (self._last_2d_x or 'x').replace('_', ' ').title()
-            lines = ([first] if first else []) + \
-                [f"{x_title}: {self._fmt_axis_value(rec.get('x'))}"]
-            lines.extend(self._metric_lines(rec))
-            if first is not None and "Unified" in first:
-                lines.append("🔗 Combined")
-            self._show_tooltip("\n".join(lines))
+            first = self._clean_label(rec.get('label') or label)
+            x_title = (self._last_2d.get('x_param') or 'x').replace('_', ' ').title()
+            coord = [(x_title + ":", self._fmt_axis_value(rec.get('x')), None)]
+            blocks = [self._record_block(first, coord, rec)]
+            counter = self._find_counterpart_2d(rec)
+            if counter is not None:
+                clabel, crec = counter
+                ccoord = [(x_title + ":", self._fmt_axis_value(crec.get('x')), None)]
+                blocks.append(self._record_block(clabel, ccoord, crec))
+            self._show_tooltip(self._tooltip_table(blocks))
             return
 
         # Fallback for artists without attached records (e.g. a stray
         # whisker pick): unnamed artists show values without a label line.
         xdata = event.artist.get_xdata()
         ydata = event.artist.get_ydata()
-        x_title = (self._last_2d_x or 'x').replace('_', ' ').title()
-        txt = f"{x_title}: {xdata[ind]}\nY: {ydata[ind]:.2f}"
-        if isinstance(label, str) and label and not label.startswith("_"):
-            txt = f"{label}\n" + txt
-        if isinstance(label, str) and "Unified" in label:
-            txt += "\n🔗 Combined"
-        self._show_tooltip(txt)
+        x_title = (self._last_2d.get('x_param') or 'x').replace('_', ' ').title()
+        fblock = {'header': self._clean_label(label),
+                  'rows': [(x_title + ":",
+                            self._fmt_axis_value(xdata[ind]), None),
+                           ("Y:", f"{ydata[ind]:.2f}", None)],
+                  'tag': None}
+        if fblock['header'] is not None and "Unified" in fblock['header']:
+            fblock['tag'] = "🔗 Combined"
+        self._show_tooltip(self._tooltip_table([fblock]))
 
     def _on_pick_3d(self, event) -> None:
         """3-D tooltip: both axis names/values plus both metrics."""
@@ -844,11 +1019,23 @@ class PlotterPresenter:
             info = infos[ind]
         x_title = (self._last_3d.get('x_param') or 'x').replace('_', ' ').title()
         y_title = (self._last_3d.get('y_param') or 'y').replace('_', ' ').title()
-        lines = [label,
-                 f"{x_title}: {self._fmt_axis_value(info.get('x'))}",
-                 f"{y_title}: {self._fmt_axis_value(info.get('y'))}"]
-        lines.extend(self._metric_lines(info))
-        self._show_tooltip("\n".join(lines))
+
+        def block(slave_label, slave_info):
+            return self._record_block(
+                slave_label,
+                [(x_title + ":", self._fmt_axis_value(slave_info.get('x')), None),
+                 (y_title + ":", self._fmt_axis_value(slave_info.get('y')), None)],
+                slave_info)
+
+        # PP block always on top, TG below; single block without match.
+        counter = self._find_counterpart_3d(label, ind)
+        if counter is not None and label == 'TG':
+            blocks = [block(*counter), block(label, info)]
+        elif counter is not None:
+            blocks = [block(label, info), block(*counter)]
+        else:
+            blocks = [block(label, info)]
+        self._show_tooltip(self._tooltip_table(blocks))
         self._update_connector(label, ind)
 
     def _update_connector(self, label: str, ind: int) -> None:
