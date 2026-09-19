@@ -111,7 +111,7 @@ class PlotView(tk.Frame):
         ax3d:
             The 3-D Axes3D instance (if a 3-D plot), else None.
         on_pick_cb:
-            Optional callback for 2-D pick events.
+            Optional callback for pick events (2-D artists and 3-D scatter).
         """
         self._destroy_canvas()
         self._placeholder.pack_forget()
@@ -127,7 +127,7 @@ class PlotView(tk.Frame):
         self._toolbar.pack(side=tk.TOP, fill=tk.X)
         self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        if on_pick_cb and ax3d is None:
+        if on_pick_cb:
             self._canvas.mpl_connect('pick_event', on_pick_cb)
 
     def redraw_idle(self) -> None:
@@ -238,6 +238,7 @@ def render_2d(
                     markersize=6, picker=5,
                 )
                 handles.append(ln)
+                _attach_records(ln, pp_pts)
 
             if ax_tg and show_tg_flags[i] and tg_pts:
                 ln = ax_tg.errorbar(
@@ -248,6 +249,7 @@ def render_2d(
                     markersize=6, picker=5,
                 )
                 handles.append(ln)
+                _attach_records(ln, tg_pts)
 
     if handles:
         ax.legend(
@@ -275,27 +277,78 @@ def render_2d(
     return fig
 
 
+def _point_record(p: dict) -> dict:
+    """Tooltip payload for one 2-D series point (drawn order)."""
+    return {
+        'x': p.get('x'),
+        'ts': p.get('ts'),
+        'ts_err': p.get('ts_err', 0.0),
+        'ns': p.get('ns'),
+        'ns_err': p.get('ns_err', 0.0),
+    }
+
+
+def _attach_records(container, pts: list[dict]) -> None:
+    """
+    Stash per-point tooltip records on the drawn data line, in drawn
+    order, so the pick handler can show values without reverse lookup.
+    Best effort — never raises.
+    """
+    try:
+        container[0]._llama_records = [_point_record(p) for p in pts]
+    except (IndexError, TypeError, AttributeError):
+        pass
+
+
+def _average_bucket(xv, members: list[dict]) -> tuple:
+    """
+    Average one x-bucket into drawn values plus a tooltip record.
+
+    Returns (y, err, record) where err uses RMS combination (same as
+    the drawn error bar) and the record carries averaged ts/ns with
+    RMS-combined errors, so the tooltip explains the bar.
+    """
+    means = [v['y'] for v in members]
+    errs = [v['err'] for v in members]
+    rec: dict = {'x': xv}
+    for key in ('ts', 'ts_err', 'ns', 'ns_err'):
+        vals = [v[key] for v in members if v.get(key) is not None]
+        if key.endswith('_err'):
+            rec[key] = (math.sqrt(sum(e ** 2 for e in vals)) / len(vals)
+                        if vals else 0.0)
+        else:
+            rec[key] = sum(vals) / len(vals) if vals else None
+    y = sum(means) / len(means)
+    err = math.sqrt(sum(e ** 2 for e in errs)) / len(errs)
+    return y, err, rec
+
+
 def _draw_unified(ax, pts, color, label, linestyle, handles):
-    """Helper: collect all per-file points, average by x, draw one line."""
+    """
+    Helper: collect all per-file points, average by x, draw one line.
+    Returns tooltip records in drawn order (averaged ts/ns included).
+    """
     if not pts:
-        return
+        return []
     from collections import defaultdict
     buckets: dict = defaultdict(list)
     for p in pts:
-        buckets[p['x']].append((p['y'], p['err']))
-    xs, ys, es = [], [], []
-    for xv, vals in sorted(buckets.items()):
-        means = [v[0] for v in vals]
-        errs = [v[1] for v in vals]
+        buckets[p['x']].append(p)
+    xs, ys, es, records = [], [], [], []
+    for xv, members in sorted(buckets.items()):
+        y, err, rec = _average_bucket(xv, members)
         xs.append(xv)
-        ys.append(sum(means) / len(means))
-        es.append(math.sqrt(sum(e ** 2 for e in errs)) / len(errs))
+        ys.append(y)
+        es.append(err)
+        records.append(rec)
     ln = ax.errorbar(
         xs, ys, yerr=es, label=label, color=color,
         marker='D', capsize=4, linestyle=linestyle,
         linewidth=2.5, picker=5,
     )
     handles.append(ln)
+    _attach_records(ln, records)
+    return records
 
 
 # ── 3-D Rendering ─────────────────────────────────────────────────────────────
@@ -434,10 +487,11 @@ def render_3d(
                 )
                 surfaces.append((verts, colors, edge_c, lw))
 
-        # Scatter points
+        # Scatter points (picker enabled for 3-D tooltips)
         ax.scatter(
             xs, ys, zs, c=color, marker=marker, s=60, label=label,
             edgecolors='white', linewidth=0.8, alpha=1.0, depthshade=False,
+            picker=5,
         )
 
         # Wall projections

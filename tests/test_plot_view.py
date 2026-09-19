@@ -350,7 +350,6 @@ class TestRender2D:
 
 # ── _draw_unified ────────────────────────────────────────────────────────────
 
-
 class TestDrawUnified:
     """Tests for _draw_unified() - helper that averages points by x."""
 
@@ -394,6 +393,38 @@ class TestDrawUnified:
         assert xdata == [1, 2]
         assert ydata[0] == pytest.approx(105.0)  # (100 + 110) / 2
         assert ydata[1] == 200.0
+
+
+# ── _average_bucket ────────────────────────────────────────────────────────
+
+
+class TestAverageBucket:
+    """Tooltip math matches the drawn error bar (pure helper)."""
+
+    def test_rms_errors_match_drawn_bar(self):
+        """ts/ns errors use the same RMS combination as y/err."""
+        import math
+        from view.plot_view import _average_bucket
+        members = [
+            {'x': 1, 'y': 100.0, 'err': 3.0,
+             'ts': 100.0, 'ts_err': 3.0, 'ns': 50000.0, 'ns_err': 1500.0},
+            {'x': 1, 'y': 110.0, 'err': 4.0,
+             'ts': 110.0, 'ts_err': 4.0, 'ns': 52000.0, 'ns_err': 2000.0},
+        ]
+        y, err, rec = _average_bucket(1, members)
+        assert y == pytest.approx(105.0)
+        assert err == pytest.approx(math.sqrt(9 + 16) / 2)
+        assert rec['ts_err'] == pytest.approx(math.sqrt(9 + 16) / 2)
+        assert rec['ns_err'] == pytest.approx(math.sqrt(1500.0 ** 2 + 2000.0 ** 2) / 2)
+        assert rec['ts'] == pytest.approx(105.0)
+
+    def test_missing_metrics_become_none(self):
+        from view.plot_view import _average_bucket
+        y, err, rec = _average_bucket(1, [{'x': 1, 'y': 100.0, 'err': 5.0}])
+        assert y == pytest.approx(100.0)
+        assert rec['ts'] is None
+        assert rec['ns'] is None
+        assert rec['ts_err'] == 0.0
 
 
 # ── render_3d ────────────────────────────────────────────────────────────────
@@ -1139,6 +1170,21 @@ class TestPlotView:
 
                 inst = mock_canvas_cls.return_value
                 inst.mpl_connect.assert_not_called()
+        self._cleanup_pv()
+
+    def test_render_3d_with_pick_cb(self):
+        """render with fig + ax3d + on_pick_cb → mpl_connect called."""
+        pv = self._make_pv()
+        fig = Figure()
+        ax = MagicMock(spec=['elev', 'azim'])
+        pick_cb = MagicMock()
+
+        with patch('view.plot_view.FigureCanvasTkAgg') as mock_canvas_cls:
+            with patch('view.plot_view.CustomNavigationToolbar'):
+                pv.render(fig, ax3d=ax, on_pick_cb=pick_cb)
+
+                inst = mock_canvas_cls.return_value
+                inst.mpl_connect.assert_called_once_with('pick_event', pick_cb)
         self._cleanup_pv()
 
     def test_render_2d_with_pick_cb(self):

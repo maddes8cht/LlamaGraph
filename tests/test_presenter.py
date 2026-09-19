@@ -1415,3 +1415,172 @@ def test_3d_render_receives_measured_xy_ticks(tmp_path):
             _, kwargs = mock_render.call_args
             assert kwargs.get('x_ticks') == [(512.0, "512"), (1024.0, "1024")]
             assert kwargs.get('y_ticks') == [(32.0, "32"), (64.0, "64")]
+
+
+def _mock_pick_event(label: str = "PP: bench", ind: int = 0):
+    """Pick event with a plain (record-free) mock artist."""
+    event = MagicMock()
+    event.ind = [ind]
+    event.artist.get_label.return_value = label
+    event.artist.get_xdata.return_value = [512.0, 1024.0]
+    event.artist.get_ydata.return_value = [100.5, 120.1]
+    return event
+
+
+def test_on_pick_rich_tooltip_from_records(tmp_path):
+    """2D tooltip shows axis name plus t/s and ns with errors."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d_x = "n_batch"
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        mock_tl.assert_called_once()
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "N Batch: 512" in text
+        assert "t/s:" in text and "100.5" in text
+        assert "ns:" in text and "50,250" in text
+
+
+def test_on_pick_positions_at_pointer(tmp_path):
+    """Tooltip anchors at the pointer position, not canvas coords."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d_x = "n_batch"
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label'):
+        presenter._on_pick(event)
+        tip = mock_tl.return_value
+        tip.winfo_pointerx.assert_called()
+        tip.winfo_pointery.assert_called()
+        tip.geometry.assert_called_once()
+
+
+def test_on_pick_3d_shows_both_axes_and_metrics(tmp_path):
+    """3D tooltip shows both axis names/values plus t/s and ns."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_3d = {
+        'x_param': 'n_batch',
+        'y_param': 'n_ubatch',
+        'infos': {'pp': [{'x': 512.0, 'y': 64.0, 'ts': 100.5,
+                          'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0}],
+                  'tg': []},
+    }
+
+    event = MagicMock()
+    event.ind = [0]
+    event.artist.get_label.return_value = "PP"
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick_3d(event)
+        mock_tl.assert_called_once()
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "N Batch: 512" in text
+        assert "N Ubatch: 64" in text
+        assert "t/s:" in text and "ns:" in text
+
+
+def test_on_pick_3d_ignores_unknown_artist(tmp_path):
+    """Non-PP/TG artists (e.g. level plane) produce no tooltip."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+
+    event = MagicMock()
+    event.ind = [0]
+    event.artist.get_label.return_value = "Level"
+
+    with patch('tkinter.Toplevel') as mock_tl:
+        presenter._on_pick_3d(event)
+        mock_tl.assert_not_called()
+
+
+def test_on_pick_3d_ignores_empty_ind(tmp_path):
+    """Empty pick index produces no tooltip."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_3d = {'x_param': 'n_batch', 'y_param': 'n_ubatch',
+                          'infos': {'pp': [], 'tg': []}}
+
+    event = MagicMock()
+    event.ind = []
+
+    with patch('tkinter.Toplevel') as mock_tl:
+        presenter._on_pick_3d(event)
+        mock_tl.assert_not_called()
+
+
+def test_tooltip_appearance_and_ttl(tmp_path):
+    """Tooltip is translucent with a gray border and hides after 6 s."""
+    from presenter.plotter_presenter import (
+        TOOLTIP_ALPHA, TOOLTIP_BORDER, TOOLTIP_TTL_MS,
+    )
+    assert TOOLTIP_ALPHA == 0.85
+    assert TOOLTIP_TTL_MS == 6000
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d_x = "n_batch"
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label'):
+        presenter._on_pick(event)
+        tip = mock_tl.return_value
+        tip.attributes.assert_called_once_with('-alpha', 0.85)
+        tip.after.assert_called_once()
+        delay, callback = tip.after.call_args.args
+        assert delay == 6000
+        assert callable(callback)
+        _, kwargs = tip.configure.call_args
+        assert kwargs.get('highlightbackground') == TOOLTIP_BORDER
+
+
+def test_second_pick_replaces_first_tooltip(tmp_path):
+    """A new pick destroys the previous tooltip (no stacking)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d_x = "n_batch"
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label'):
+        presenter._on_pick(event)
+        first_tip = mock_tl.return_value
+        presenter._on_pick(event)
+        first_tip.destroy.assert_called_once()
+        assert presenter._active_tip is mock_tl.return_value
+
+
+def test_hide_tooltip_survives_dead_widget(tmp_path):
+    """Deferred hide never raises, even on a destroyed widget."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    dead = MagicMock()
+    dead.destroy.side_effect = Exception("dead")
+    presenter._hide_tooltip(dead)  # must not raise

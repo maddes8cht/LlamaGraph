@@ -15,6 +15,7 @@ The Presenter is the only place that imports from both model/ and view/.
 
 from __future__ import annotations
 
+import tkinter as tk
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +24,11 @@ from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
 from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
 from view.plot_view import thin_value_ticks, render_2d, render_3d
+
+# Tooltip appearance/behavior (shared by the 2-D and 3-D pick handlers)
+TOOLTIP_ALPHA = 0.85
+TOOLTIP_BORDER = '#888888'
+TOOLTIP_TTL_MS = 6000
 
 
 class PlotterPresenter:
@@ -76,6 +82,11 @@ class PlotterPresenter:
         self._home_cam_3d: Optional[dict] = None
         self._current_3d_ax = None
         self._last_3d_signature: Optional[tuple] = None
+
+        # Tooltip context (axis names + per-point payloads)
+        self._last_2d_x: str = ""
+        self._last_3d: dict = {}
+        self._active_tip = None
 
         # Connect everything
         self._wire_callbacks()
@@ -536,6 +547,8 @@ class PlotterPresenter:
             self._win.plot_view.show_placeholder("⚠ No parameter axis available.")
             return
 
+        self._last_2d_x = x_param
+
         ls = self._win.left_sidebar
         n = self._model.get_dataset_count()
         show_pp_flags = [ls.get_pp_flag(i) and show_pp for i in range(n)]
@@ -609,7 +622,7 @@ class PlotterPresenter:
         if self._current_3d_ax is not None:
             saved_cam = self._save_camera(self._current_3d_ax)
 
-        points_pp, points_tg, stats = self._model.get_3d_points(
+        points_pp, points_tg, stats, infos = self._model.get_3d_points(
             x_dim=x_param,
             y_dim=y_param,
             show_ts=self._show_ts,
@@ -657,7 +670,8 @@ class PlotterPresenter:
         )
 
         self._current_3d_ax = ax
-        self._win.plot_view.render(fig, ax3d=ax)
+        self._last_3d = {'infos': infos, 'x_param': x_param, 'y_param': y_param}
+        self._win.plot_view.render(fig, ax3d=ax, on_pick_cb=self._on_pick_3d)
 
         # Apply categorical tick labels if dimensions are string-valued
         if x_labels is not None:
@@ -680,30 +694,128 @@ class PlotterPresenter:
                 self._restore_camera(ax, saved_cam)
             self._win.plot_view.redraw_idle()
 
-    # ── Pick event (2-D tooltip) ──────────────────────────────────────────────
+    # ── Pick events (2-D/3-D tooltips) ─────────────────────────────────────
+
+    @staticmethod
+    def _fmt_axis_value(value) -> str:
+        if value is None:
+            return "n/a"
+        if isinstance(value, str):
+            return value
+        return f"{value:g}"
+
+    @staticmethod
+    def _fmt_ts(value, err) -> str:
+        if value is None:
+            return "n/a"
+        if err:
+            return f"{value:.4g} ± {err:.2g}"
+        return f"{value:.4g}"
+
+    @staticmethod
+    def _fmt_ns(value, err) -> str:
+        if value is None:
+            return "n/a"
+        if err:
+            return f"{value:,.0f} ± {err:,.0f}"
+        return f"{value:,.0f}"
+
+    @staticmethod
+    def _metric_lines(record: dict) -> list[str]:
+        """Shared t/s + ns tooltip lines for a point record."""
+        return [
+            f"t/s: {PlotterPresenter._fmt_ts(record.get('ts'), record.get('ts_err'))}",
+            f"ns: {PlotterPresenter._fmt_ns(record.get('ns'), record.get('ns_err'))}",
+        ]
+
+    def _show_tooltip(self, text: str) -> None:
+        # One tooltip at a time: drop the previous one so rapid picks
+        # do not stack overlapping windows.
+        old_tip = self._active_tip
+        if old_tip is not None:
+            try:
+                old_tip.destroy()
+            except Exception:
+                pass
+            self._active_tip = None
+        tip = tk.Toplevel(self._win.root)
+        tip.wm_overrideredirect(True)
+        # Anchor at the real pointer position: mouseevent coordinates
+        # are canvas-relative, which parked old tooltips far off target.
+        try:
+            px, py = tip.winfo_pointerx() + 16, tip.winfo_pointery() + 12
+        except Exception:
+            px, py = 100, 100
+        tip.geometry(f"+{px}+{py}")
+        tip.configure(bg='#1e1e1e', bd=1, relief='solid',
+                      highlightbackground=TOOLTIP_BORDER,
+                      highlightthickness=1)
+        try:
+            tip.attributes('-alpha', TOOLTIP_ALPHA)
+        except Exception:
+            pass  # translucency unsupported on this platform
+
+        tk.Label(
+            tip, text=text,
+            bg='#1e1e1e', fg='#d4d4d4',
+            font=('Consolas', 9), padx=5, pady=3,
+        ).pack()
+        self._active_tip = tip
+        tip.after(TOOLTIP_TTL_MS, lambda: self._hide_tooltip(tip))
+
+    def _hide_tooltip(self, tip) -> None:
+        """Deferred tooltip cleanup that survives app teardown."""
+        try:
+            tip.destroy()
+        except Exception:
+            pass
+        if self._active_tip is tip:
+            self._active_tip = None
 
     def _on_pick(self, event) -> None:
+        """2-D tooltip: axis name, both metrics with errors."""
         if not hasattr(event, 'ind') or len(event.ind) == 0:
             return
         ind = event.ind[0]
         label = event.artist.get_label()
+        records = getattr(event.artist, '_llama_records', None)
+
+        if isinstance(records, list) and 0 <= ind < len(records):
+            rec = records[ind]
+            x_title = (self._last_2d_x or 'x').replace('_', ' ').title()
+            lines = [label,
+                     f"{x_title}: {self._fmt_axis_value(rec.get('x'))}"]
+            lines.extend(self._metric_lines(rec))
+            if "Unified" in label:
+                lines.append("🔗 Combined")
+            self._show_tooltip("\n".join(lines))
+            return
+
+        # Fallback for artists without attached records
         xdata = event.artist.get_xdata()
         ydata = event.artist.get_ydata()
-
-        tip = __import__('tkinter').Toplevel(self._win.root)
-        tip.wm_overrideredirect(True)
-        mx = event.mouseevent.x + 20
-        my = event.mouseevent.y + 20
-        tip.geometry(f"+{mx}+{my}")
-        tip.configure(bg='#1e1e1e', bd=1, relief='solid')
-
         txt = f"{label}\nX: {xdata[ind]}\nY: {ydata[ind]:.2f}"
         if "Unified" in label:
             txt += "\n🔗 Combined"
+        self._show_tooltip(txt)
 
-        __import__('tkinter').Label(
-            tip, text=txt,
-            bg='#1e1e1e', fg='#d4d4d4',
-            font=('Consolas', 9), padx=5, pady=3,
-        ).pack()
-        tip.after(2000, tip.destroy)
+    def _on_pick_3d(self, event) -> None:
+        """3-D tooltip: both axis names/values plus both metrics."""
+        if not hasattr(event, 'ind') or len(event.ind) == 0:
+            return
+        ind = event.ind[0]
+        label = event.artist.get_label()
+        series = 'pp' if label == 'PP' else 'tg' if label == 'TG' else None
+        if series is None:
+            return
+        infos = self._last_3d.get('infos', {}).get(series)
+        if not isinstance(infos, list) or not (0 <= ind < len(infos)):
+            return
+        info = infos[ind]
+        x_title = (self._last_3d.get('x_param') or 'x').replace('_', ' ').title()
+        y_title = (self._last_3d.get('y_param') or 'y').replace('_', ' ').title()
+        lines = [label,
+                 f"{x_title}: {self._fmt_axis_value(info.get('x'))}",
+                 f"{y_title}: {self._fmt_axis_value(info.get('y'))}"]
+        lines.extend(self._metric_lines(info))
+        self._show_tooltip("\n".join(lines))
