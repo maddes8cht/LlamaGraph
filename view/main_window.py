@@ -70,6 +70,7 @@ class MainWindow:
         self._show_wireframe_var = tk.IntVar(value=0)
         self._show_projections_var = tk.IntVar(value=0)
         self._show_errors_3d = tk.IntVar(value=1)
+        self._dolly_var = tk.IntVar(value=1)
         self._z_label_mode = tk.StringVar(value="both-norm")
         self._show_level_var = tk.IntVar(value=0)
         self._level_val_var = tk.IntVar(value=50)
@@ -260,6 +261,14 @@ class MainWindow:
         chk(" Err", self._show_errors_3d, '#f44747').pack(side=tk.LEFT, padx=2)
         chk(" Proj", self._show_projections_var, '#569cd6').pack(side=tk.LEFT, padx=2)
 
+        tk.Checkbutton(
+            bar, text=" Dolly", variable=self._dolly_var,
+            command=self._on_toggle_dolly,
+            bg=COLORS['bg'], fg='#b5cea8',
+            selectcolor=COLORS['checkbox_active'],
+            font=('Segoe UI', 9),
+        ).pack(side=tk.LEFT, padx=2)
+
         # Store controls that need state management
         self._3d_controls = [
             self._cb_x, self._cb_y, self._cb_z,
@@ -274,6 +283,10 @@ class MainWindow:
     def _on_toggle_3d(self) -> None:
         if self._toggle_3d_cb:
             self._toggle_3d_cb()
+
+    def _on_toggle_dolly(self) -> None:
+        if self._toggle_dolly_cb:
+            self._toggle_dolly_cb()
 
     def _on_level_step(self, delta: int) -> None:
         """Nudge the level value by *delta* (±1 via the arrow buttons)."""
@@ -315,12 +328,16 @@ class MainWindow:
     # Presenter injects these
     _render_cb: Optional[Callable] = None
     _toggle_3d_cb: Optional[Callable] = None
+    _toggle_dolly_cb: Optional[Callable] = None
 
     def set_render_callback(self, cb: Callable) -> None:
         self._render_cb = cb
 
     def set_toggle_3d_callback(self, cb: Callable) -> None:
         self._toggle_3d_cb = cb
+
+    def set_toggle_dolly_callback(self, cb: Callable) -> None:
+        self._toggle_dolly_cb = cb
 
     def set_toggle_metric_callback(self, cb: Callable) -> None:
         self._toggle_btn.config(command=cb)
@@ -411,6 +428,10 @@ class MainWindow:
     @property
     def show_errors_3d(self) -> bool:
         return bool(self._show_errors_3d.get())
+
+    @property
+    def dolly(self) -> bool:
+        return bool(self._dolly_var.get())
 
     @property
     def z_label_mode(self) -> str:

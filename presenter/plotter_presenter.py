@@ -29,6 +29,8 @@ from view.plot_view import (
     build_2d_title,
     build_3d_title,
     interp_surface_z,
+    set_dolly_mode,
+    snap_roll_zero,
     thin_value_ticks,
     render_2d,
     render_3d,
@@ -144,6 +146,7 @@ class PlotterPresenter:
         # Main window toolbar callbacks
         win.set_render_callback(self._render_plot)
         win.set_toggle_3d_callback(self._on_toggle_3d)
+        win.set_toggle_dolly_callback(self._on_toggle_dolly)
         win.set_toggle_metric_callback(self.toggle_metric)
 
         # Plot view home-button override
@@ -463,6 +466,20 @@ class PlotterPresenter:
         self._update_right_sidebar()
         self._render_plot()
 
+    def _on_toggle_dolly(self) -> None:
+        """
+        Called when the user clicks the Dolly checkbox.
+
+        Switching the rotation style is instant (read per drag), so no
+        figure rebuild is needed: apply the style and, when enabling,
+        snap a possibly rolled camera back to Z-up with a redraw.
+        """
+        set_dolly_mode(self._win.dolly)
+        if self._win.dolly and self._win.mode_3d \
+                and self._current_3d_ax is not None:
+            if snap_roll_zero(self._current_3d_ax):
+                self._win.plot_view.redraw_idle()
+
     # ── Metric toggle (t/s vs ns) ─────────────────────────────────────────────
 
     def toggle_metric(self) -> None:
@@ -519,6 +536,8 @@ class PlotterPresenter:
         """
         if self._win.mode_3d and self._current_3d_ax and self._home_cam_3d:
             self._restore_camera(self._current_3d_ax, self._home_cam_3d)
+            if self._win.dolly:
+                snap_roll_zero(self._current_3d_ax)
             self._win.plot_view.redraw_idle()
             return True
         return False
@@ -614,6 +633,10 @@ class PlotterPresenter:
             )
             return
 
+        # Rotation style follows the Dolly checkbox (instant per drag,
+        # no scale effect, so it stays out of the signature below).
+        set_dolly_mode(self._win.dolly)
+
         # Detect scale-relevant changes — a new axis combo, metric,
         # normalization, series visibility, interpolation, or gap mask
         # means the old axis limits (especially zlim) no longer fit the
@@ -708,12 +731,19 @@ class PlotterPresenter:
             self._home_cam_3d = self._save_camera(ax)
 
         # Restore the user's last camera position (angle only when the
-        # data scale changed, full camera otherwise)
+        # data scale changed, full camera otherwise). Dolly mode never
+        # shows a rolled view: a restored free-mode camera snaps back to
+        # Z-up (roll-only change, limits kept). One coalesced redraw.
+        redraw = False
         if saved_cam is not None:
             if scale_changed:
                 self._restore_rotation(ax, saved_cam)
             else:
                 self._restore_camera(ax, saved_cam)
+            redraw = True
+        if self._win.dolly and snap_roll_zero(ax):
+            redraw = True
+        if redraw:
             self._win.plot_view.redraw_idle()
 
     # ── Pick events (2-D/3-D tooltips) ─────────────────────────────────────

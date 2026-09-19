@@ -342,3 +342,13 @@ class TestGraphTitle:
         mw.set_graph_title("something")
         mw.set_graph_title("")
         assert tk_root.title() == WINDOW_TITLE_BASE
+
+
+class TestDollyDefault:
+    """Dolly (roll-locked rotation) is the default view mode."""
+
+    def test_dolly_defaults_on(self, tk_root):
+        """Fresh window → dolly enabled (Z stays up)."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        assert mw.dolly is True

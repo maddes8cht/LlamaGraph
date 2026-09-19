@@ -160,6 +160,7 @@ class MockMainWindow:
         self._show_wireframe = 0
         self._show_projections = 0
         self._show_errors_3d = 1
+        self._dolly = 1
         self._z_label_mode = "both-norm"
         self._show_level = 0
         self._level_val = 50
@@ -214,6 +215,10 @@ class MockMainWindow:
         return bool(self._show_errors_3d)
 
     @property
+    def dolly(self) -> bool:
+        return bool(self._dolly)
+
+    @property
     def z_label_mode(self) -> str:
         return self._z_label_mode
 
@@ -259,6 +264,9 @@ class MockMainWindow:
 
     def set_toggle_3d_callback(self, cb):
         self._toggle_3d_cb = cb
+
+    def set_toggle_dolly_callback(self, cb):
+        self._toggle_dolly_cb = cb
 
     def set_toggle_metric_callback(self, cb):
         self._metric_cb = cb
@@ -875,6 +883,62 @@ def test_graph_title_wired_to_window(tmp_path):
     assert window.last_graph_title != ""
     presenter._clear_loaded_data()
     assert window.last_graph_title == ""
+
+
+def test_dolly_toggle_snaps_roll(tmp_path):
+    """Dolly on → azel style + rolled camera snapped to Z-up with redraw."""
+    import matplotlib as mpl
+    from unittest.mock import MagicMock
+    prev = mpl.rcParams['axes3d.mouserotationstyle']
+    try:
+        window = MockMainWindow()
+        presenter = PlotterPresenter(window, tmp_path)
+        window._mode_3d = 1
+        mock_ax = MagicMock()
+        mock_ax.roll = 12.0
+        presenter._current_3d_ax = mock_ax
+
+        window._dolly = 1
+        presenter._on_toggle_dolly()
+        assert mpl.rcParams['axes3d.mouserotationstyle'] == 'azel'
+        assert mock_ax.roll == 0.0
+        assert window.plot_view.redraw_count >= 1
+
+        window._dolly = 0
+        mock_ax.roll = 7.0
+        before = window.plot_view.redraw_count
+        presenter._on_toggle_dolly()
+        assert mpl.rcParams['axes3d.mouserotationstyle'] == 'arcball'
+        assert mock_ax.roll == 7.0  # free mode leaves roll alone
+        assert window.plot_view.redraw_count == before
+    finally:
+        mpl.rcParams['axes3d.mouserotationstyle'] = prev
+
+
+def test_render_3d_applies_dolly_style(tmp_path):
+    """3D render applies the rotation style from the Dolly checkbox."""
+    import matplotlib as mpl
+    from unittest.mock import MagicMock, patch
+    prev = mpl.rcParams['axes3d.mouserotationstyle']
+    try:
+        csv1 = create_bench_csv(tmp_path / "bench.csv")
+        window = MockMainWindow()
+        presenter = PlotterPresenter(window, tmp_path)
+        presenter._available_csvs = [csv1]
+        window._axis_x = "params"
+        presenter._on_file_select([0])
+        window._mode_3d = 1
+        window._axis_x = "params"
+        window._axis_y = "n_gpu_layers"
+
+        window._dolly = 0
+        with patch('presenter.plotter_presenter.render_3d',
+                   return_value=(MagicMock(), MagicMock())):
+            with patch.object(window.plot_view, 'render'):
+                presenter._render_plot()
+        assert mpl.rcParams['axes3d.mouserotationstyle'] == 'arcball'
+    finally:
+        mpl.rcParams['axes3d.mouserotationstyle'] = prev
 
 
 def test_on_file_select_with_errors(tmp_path):

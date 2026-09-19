@@ -617,6 +617,47 @@ def _draw_unified(ax, pts, color, label, linestyle, handles, series=None):
     return records
 
 
+# ── 3-D camera modes (dolly vs free) ─────────────────────────────────────────
+
+def set_dolly_mode(enabled: bool) -> None:
+    """
+    Select the 3-D mouse-rotation style.
+
+    Enabled (dolly, the default): 'azel' — dragging rotates azimuth and
+    elevation only, roll stays 0, so the Z axis always points up. Disabled
+    (free): 'arcball' — quaternion trackball with roll, the Z axis can
+    tilt. Read per drag from rcParams, so toggling needs no re-render.
+    Best effort on old matplotlib (< 3.10 lacks the rcParam): dolly then
+    silently stays inactive instead of breaking the render.
+    """
+    import matplotlib as mpl
+    try:
+        mpl.rcParams['axes3d.mouserotationstyle'] = \
+            'azel' if enabled else 'arcball'
+    except KeyError:
+        pass
+
+
+def snap_roll_zero(ax) -> bool:
+    """
+    Reset the camera roll to 0 (Z up), keeping elev/azim/dist untouched.
+
+    Returns True when the roll actually changed (caller should redraw).
+    Direct attribute assignment — view_init() would also reset the zoom
+    distance. Residual float dust (< 1e-9 deg) counts as clean. Never
+    raises.
+    """
+    try:
+        roll = getattr(ax, 'roll', 0.0)
+        if abs(roll) > 1e-9:
+            ax.roll = 0.0
+            ax.stale = True
+            return True
+    except (TypeError, AttributeError, ValueError):
+        pass
+    return False
+
+
 # ── 3-D Rendering ─────────────────────────────────────────────────────────────
 
 def build_3d_title(x_param: str, y_param: str) -> str:

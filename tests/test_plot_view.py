@@ -1525,6 +1525,41 @@ class TestPlotView:
         self._cleanup_pv()
 
 
+# ── Dolly vs free rotation ────────────────────────────────────────────────
+
+
+class TestDollyMode:
+    """Tests for set_dolly_mode() / snap_roll_zero()."""
+
+    def test_set_dolly_mode_switches_style(self):
+        """Dolly on → azel (roll locked); off → arcball (free)."""
+        import matplotlib as mpl
+        from view.plot_view import set_dolly_mode
+        prev = mpl.rcParams['axes3d.mouserotationstyle']
+        try:
+            set_dolly_mode(True)
+            assert mpl.rcParams['axes3d.mouserotationstyle'] == 'azel'
+            set_dolly_mode(False)
+            assert mpl.rcParams['axes3d.mouserotationstyle'] == 'arcball'
+        finally:
+            mpl.rcParams['axes3d.mouserotationstyle'] = prev
+
+    def test_snap_roll_zero_noop(self):
+        """Roll already 0 → False, no redraw needed."""
+        from types import SimpleNamespace
+        from view.plot_view import snap_roll_zero
+        assert snap_roll_zero(SimpleNamespace(roll=0.0)) is False
+
+    def test_snap_roll_zero_snaps(self):
+        """Nonzero roll → reset to 0, elev/azim/dist untouched."""
+        from types import SimpleNamespace
+        from view.plot_view import snap_roll_zero
+        ax = SimpleNamespace(roll=12.0, elev=30.0, azim=-60.0, stale=False)
+        assert snap_roll_zero(ax) is True
+        assert ax.roll == 0.0
+        assert (ax.elev, ax.azim) == (30.0, -60.0)
+
+
 # ── Surface fallback (bug-hunting) ──────────────────────────────────────
 
 
