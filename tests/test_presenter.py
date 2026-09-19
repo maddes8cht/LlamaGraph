@@ -159,6 +159,7 @@ class MockMainWindow:
         self._surface_style = "Solid"
         self._show_wireframe = 0
         self._show_projections = 0
+        self._projection_mode = "none"
         self._show_errors_3d = 1
         self._dolly = 1
         self._z_label_mode = "both-norm"
@@ -207,8 +208,13 @@ class MockMainWindow:
         return bool(self._show_wireframe)
 
     @property
+    def projection_mode(self) -> str:
+        mode = str(getattr(self, "_projection_mode", "none")).strip().lower()
+        return mode if mode in ("none", "back", "front", "both") else "none"
+
+    @property
     def show_projections(self) -> bool:
-        return bool(self._show_projections)
+        return self.projection_mode != "none"
 
     @property
     def show_errors_3d(self) -> bool:

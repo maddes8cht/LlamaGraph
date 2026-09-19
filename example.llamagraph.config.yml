@@ -73,9 +73,10 @@ show_wireframe: false
 # CLI: --errors / --no-errors
 show_errors: true
 
-# Show 3D projections at startup.
-# CLI: --projections / --no-projections
-show_projections: false
+# Wall projections at startup: none, back (y=max / x=min),
+# front (y=min / x=max), or both (all four walls).
+# CLI: --projection-mode none|back|front|both
+projection_mode: "none"
 
 # Dolly (roll-locked) rotation style at startup.
 # CLI: --dolly / --no-dolly

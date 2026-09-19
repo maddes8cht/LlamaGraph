@@ -43,6 +43,11 @@ INTERP_METHODS = ("Cubic", "Cubic+Clamp", "Linear")
 #: Valid Z label modes (toolbar combo values).
 Z_LABEL_MODES = ("pp", "tg", "both-norm", "%")
 
+#: Valid projection modes (toolbar combo values). Walls are data-fixed
+#: with the home view as reference: "back" draws on y=max / x=min,
+#: "front" on y=min / x=max, "both" on all four walls.
+PROJECTION_MODES = ("none", "back", "front", "both")
+
 #: Built-in startup defaults (identical to the previous no-config behavior).
 DEFAULTS: dict[str, Any] = {
     "data_path": ".",
@@ -59,7 +64,7 @@ DEFAULTS: dict[str, Any] = {
     "mask_gaps": False,
     "show_wireframe": False,
     "show_errors": True,
-    "show_projections": False,
+    "projection_mode": "none",
     "dolly": True,
     "z_label_mode": "both-norm",
     "unify": False,
@@ -255,7 +260,15 @@ def coerce_config(raw: dict[str, Any], source: str = "<config>") -> dict[str, An
     built-in default (never raise: a bad config must not break startup).
     """
     typed: dict[str, Any] = {}
+    legacy_proj: Optional[bool] = None
     for key, value in raw.items():
+        if key == "show_projections":
+            # Legacy boolean (True -> "back", False -> "none"); an
+            # explicit projection_mode key wins when both are present.
+            coerced = _coerce_bool(key, value, source)
+            if coerced is not None:
+                legacy_proj = coerced
+            continue
         if key not in DEFAULTS:
             _warn(f"ignoring '{source}': unknown key '{key}'.")
             continue
@@ -267,7 +280,7 @@ def coerce_config(raw: dict[str, Any], source: str = "<config>") -> dict[str, An
                       f"non-empty path, got {value!r}.")
         elif key in ("latency_ns", "use_md", "normalize", "mode_3d",
                      "show_level", "surface_visible", "mask_gaps",
-                     "show_wireframe", "show_errors", "show_projections",
+                     "show_wireframe", "show_errors",
                      "dolly", "unify", "show_pp", "show_tg"):
             coerced = _coerce_bool(key, value, source)
             if coerced is not None:
@@ -292,6 +305,12 @@ def coerce_config(raw: dict[str, Any], source: str = "<config>") -> dict[str, An
             coerced = _coerce_choice(key, value, source, Z_LABEL_MODES)
             if coerced is not None:
                 typed[key] = coerced
+        elif key == "projection_mode":
+            coerced = _coerce_choice(key, value, source, PROJECTION_MODES)
+            if coerced is not None:
+                typed[key] = coerced
+    if "projection_mode" not in typed and legacy_proj is not None:
+        typed["projection_mode"] = "back" if legacy_proj else "none"
     return typed
 
 

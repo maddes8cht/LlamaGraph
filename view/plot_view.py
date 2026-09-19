@@ -155,7 +155,10 @@ class PlotView(tk.Frame):
         fig:
             The figure to display.
         ax3d:
-            The 3-D Axes3D instance (if a 3-D plot), else None.
+            The 3-D Axes3D instance (if a 3-D plot), else None. When it
+            carries wall-projection records, their front/back draw
+            order follows rotation via a draw_event hook (one settling
+            redraw at most; see _update_projection_depth).
         on_pick_cb:
             Optional callback for data-point clicks (2-D lines and
             3-D scatter). Clicks dispatch manually so every tagged
@@ -171,6 +174,18 @@ class PlotView(tk.Frame):
         self._placeholder.pack_forget()
 
         self._canvas = FigureCanvasTkAgg(fig, master=self)
+        if getattr(ax3d, '_llama_proj_records', None):
+            canvas = self._canvas
+            depth_ax = ax3d
+
+            def _on_draw_depth(_event=None):
+                try:
+                    if _update_projection_depth(depth_ax):
+                        canvas.draw_idle()
+                except Exception:
+                    pass
+
+            self._canvas.mpl_connect('draw_event', _on_draw_depth)
         self._canvas.draw()
 
         self._toolbar = CustomNavigationToolbar(
@@ -681,7 +696,8 @@ def render_3d(
     z_label_mode: str = "both-norm",
     show_surface: bool = True,
     show_wireframe: bool = False,
-    show_projections: bool = False,
+    show_projections: Optional[bool] = None,
+    projection_mode: str = "none",
     show_errors_3d: bool = True,
     show_level: bool = False,
     level_val: int = 50,
@@ -739,8 +755,25 @@ def render_3d(
     x_ticks / y_ticks:
         Optional (position, label) pairs showing the actually measured
         values on X/Y instead of automatic decimal ticks.
+    projection_mode:
+        "none" (no projections), "back" (walls at y=max / x=min),
+        "front" (walls at y=min / x=max), or "both" (all four walls).
+        Walls are data-fixed with the home view as reference, never
+        camera-relative. The legacy *show_projections* boolean maps
+        True to "back" when no explicit mode is given. Recorded
+        projection artists additionally glue to their min/max box
+        face on every limit change, so panning or zooming never
+        detaches them from the walls (row colors and grouping stay
+        home-referenced).
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    mode = (projection_mode or "none").strip().lower() \
+        if isinstance(projection_mode, str) else "none"
+    if mode not in ("none", "back", "front", "both"):
+        mode = "none"
+    if show_projections is True and mode == "none":
+        mode = "back"
 
     bg = COLORS['bg'] if dark_mode else 'white'
     fig = Figure(figsize=(11, 7), facecolor=bg)
@@ -758,8 +791,24 @@ def render_3d(
     all_ys = [p[1] for p in all_pts]
     all_zs = [p[2] for p in all_pts]
 
+    # Data-fixed projection walls with the home view as reference:
+    # back = y/max + x/min, front = y/min + x/max, both = all four.
     max_y_wall = max(all_ys) if all_ys else 0
+    min_y_wall = min(all_ys) if all_ys else 0
     min_x_wall = min(all_xs) if all_xs else 0
+    max_x_wall = max(all_xs) if all_xs else 0
+    if mode == "back":
+        y_walls = [max_y_wall]
+        x_walls = [min_x_wall]
+    elif mode == "front":
+        y_walls = [min_y_wall]
+        x_walls = [max_x_wall]
+    elif mode == "both":
+        y_walls = [min_y_wall, max_y_wall]
+        x_walls = [min_x_wall, max_x_wall]
+    else:
+        y_walls = []
+        x_walls = []
 
     cmap_pp = LinearSegmentedColormap.from_list(
         "custom_pp", [COLORS['bg'], pp_color, "#ffffff"]
@@ -825,15 +874,27 @@ def render_3d(
         if infos:
             sc._llama_records = list(infos)
 
-        # Wall projections
-        if show_projections:
-            ax.plot(xs, zs, zs=max_y_wall, zdir='y',
-                    color=color, linestyle='--', marker=marker, markersize=4, alpha=0.5)
-            ax.plot(ys, zs, zs=min_x_wall, zdir='x',
-                    color=color, linestyle=':', marker=marker, markersize=4, alpha=0.5)
+        # Row-wise wall projections (see _draw_wall_projections):
+        # each constant-y row is drawn on every active Y wall, each
+        # constant-x row on every active X wall; rows are never
+        # connected across.
+        if mode != "none":
+            _draw_wall_projections(
+                ax, list(pts), color, marker,
+                y_walls=y_walls, x_walls=x_walls,
+                x_span=(max(all_xs) - min(all_xs)) if len(set(all_xs)) > 1 else 0.0,
+                y_span=(max(all_ys) - min(all_ys)) if len(set(all_ys)) > 1 else 0.0,
+                cap_x=(max(all_xs) - min(all_xs)) * 0.015 if len(set(all_xs)) > 1 else 0.5,
+                cap_y=(max(all_ys) - min(all_ys)) * 0.015 if len(set(all_ys)) > 1 else 0.5,
+            )
 
     plot_series(points_pp, pp_color, "PP", 'o', cmap_pp, infos_pp)
     plot_series(points_tg, tg_color, "TG", 's', cmap_tg, infos_tg)
+
+    # Live box glue so wall projections survive pan/zoom (see
+    # _connect_projection_glue); no-op when the mode is "none".
+    if mode != "none":
+        _connect_projection_glue(ax)
 
     # One joint surface collection so overlapping PP/TG triangles — and
     # the level plane below — are depth-sorted against each other
@@ -1038,6 +1099,364 @@ def interp_surface_z(xs, ys, zs, x: float, y: float) -> Optional[float]:
     except (ValueError, TypeError):
         return None
     return value if math.isfinite(value) else None
+
+
+# Farthest projection rows are lightened towards white by up to this
+# fraction; the row touching the wall keeps the plain series color.
+PROJECTION_MAX_LIGHTEN = 0.65
+
+# Draw order of wall-projection artists. Axes3D.draw() reassigns every
+# collection (scatter, surfaces) a depth-sorted zorder above the axes
+# (~3 and up), so static lines at the default 2 are always overpainted
+# by the translucent surface. Walls facing the viewer therefore use
+# PROJECTION_ZORDER (always crisp, never dimmed by data behind them);
+# walls facing away keep PROJECTION_BACK_ZORDER (covered by the surface
+# as if behind it). _update_projection_depth() flips each wall between
+# the two as the figure rotates, quadrant by quadrant.
+PROJECTION_ZORDER = 10
+PROJECTION_BACK_ZORDER = 2
+
+
+def _mix_towards_white(base_hex: str, amount: float) -> str:
+    """Lighten *base_hex* towards white by *amount* (0 = unchanged, 1 = white)."""
+    try:
+        amt = max(0.0, min(1.0, float(amount)))
+    except (TypeError, ValueError):
+        return base_hex
+    try:
+        r = int(base_hex[1:3], 16) / 255.0
+        g = int(base_hex[3:5], 16) / 255.0
+        b = int(base_hex[5:7], 16) / 255.0
+    except (ValueError, IndexError, TypeError, AttributeError):
+        return base_hex
+    r += (1.0 - r) * amt
+    g += (1.0 - g) * amt
+    b += (1.0 - b) * amt
+    return f'#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}'
+
+
+def _projection_row_color(base_hex: str, distance: float, span: float) -> str:
+    """
+    Depth-shaded color for one projection row.
+
+    *distance* is the wall gap (0 at the wall), *span* the full axis span;
+    the nearest row keeps the base color, farther rows are progressively
+    lightened towards white. A zero span yields the base color. Never raises.
+    """
+    try:
+        if not span or span <= 0:
+            return base_hex
+        t = max(0.0, min(1.0, float(distance) / float(span)))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return base_hex
+    return _mix_towards_white(base_hex, t * PROJECTION_MAX_LIGHTEN)
+
+
+def _draw_wall_projections(
+    ax,
+    pts: list[tuple],
+    color: str,
+    marker: str,
+    y_walls: list[float],
+    x_walls: list[float],
+    x_span: float,
+    y_span: float,
+    cap_x: float,
+    cap_y: float,
+    y_wall: Optional[float] = None,
+    x_wall: Optional[float] = None,
+) -> None:
+    """
+    Row-wise projections of measured points onto the side walls.
+
+    Each constant-y row is connected (sorted by x) on every active Y
+    wall; each constant-x row is connected (sorted by y) on every
+    active X wall. Rows are never connected across, and single-point
+    rows draw only a marker. Every projected point carries its own
+    vertical (Z) error bar with a small in-plane cap. Row colors encode
+    wall distance: the row touching a wall uses *color*, farther rows
+    are progressively lightened. The legacy single-wall keywords
+    (*y_wall*/*x_wall*) map to one-element wall lists. Every drawn
+    artist is recorded on the axes (*_llama_proj_records* as (artist,
+    axis, side) tuples) so glue_projections_to_box() can keep it on
+    its min/max box face while panning or zooming. Initial draw order
+    follows the current camera via _projection_front() (facing walls on
+    top, turned-away walls below the surface). Best effort —
+    never raises.
+    """
+    if not pts:
+        return
+    if y_wall is not None and not y_walls:
+        y_walls = [y_wall]
+    if x_wall is not None and not x_walls:
+        x_walls = [x_wall]
+    if not y_walls and not x_walls:
+        return
+    try:
+        rows_y: dict = {}
+        rows_x: dict = {}
+        for pt in pts:
+            try:
+                x, y, z, err = pt
+            except (TypeError, ValueError):
+                continue
+            rows_y.setdefault(y, []).append((x, z, err))
+            rows_x.setdefault(x, []).append((y, z, err))
+
+        records: list[tuple] = []
+        for wall in y_walls:
+            # Farthest rows first so the darkest (nearest-wall) row
+            # paints last: ascending when the wall is at max y,
+            # descending when it is at min y.
+            wall_is_max = wall >= max(rows_y) if rows_y else True
+            side = 'max' if wall_is_max else 'min'
+            zord = PROJECTION_ZORDER if _projection_front(ax, 'y', side) \
+                else PROJECTION_BACK_ZORDER
+            ordered = sorted(rows_y) if wall_is_max else sorted(
+                rows_y, reverse=True)
+            for y_val in ordered:
+                members = sorted(rows_y[y_val], key=lambda m: (m[0], m[1]))
+                xs = [m[0] for m in members]
+                zs = [m[1] for m in members]
+                row_color = _projection_row_color(
+                    color, abs(wall - y_val), y_span)
+                yw = [wall] * len(xs)
+                style = '-' if len(members) >= 2 else 'None'
+                _record_proj_line(records, ax.plot(
+                    xs, yw, zs, color=row_color,
+                    linestyle=style, linewidth=1.2,
+                    marker=marker, markersize=4, alpha=0.9,
+                    zorder=zord), 'y', side)
+                for x, z, err in members:
+                    try:
+                        lo, hi = z - err, z + err
+                    except TypeError:
+                        continue
+                    _record_proj_line(records, ax.plot(
+                        [x, x], [wall, wall], [lo, hi],
+                        color=row_color, linewidth=1.2, alpha=0.9,
+                        zorder=zord), 'y', side)
+                    for z_cap in (lo, hi):
+                        _record_proj_line(records, ax.plot(
+                            [x - cap_x, x + cap_x],
+                            [wall, wall], [z_cap, z_cap],
+                            color=row_color, linewidth=1.0, alpha=0.9,
+                            zorder=zord),
+                            'y', side)
+
+        for wall in x_walls:
+            # Same farthest-first rule along x: descending when the
+            # wall is at min x, ascending when it is at max x.
+            wall_is_min = wall <= min(rows_x) if rows_x else True
+            side = 'min' if wall_is_min else 'max'
+            zord = PROJECTION_ZORDER if _projection_front(ax, 'x', side) \
+                else PROJECTION_BACK_ZORDER
+            ordered = sorted(rows_x, reverse=True) if wall_is_min else sorted(
+                rows_x)
+            for x_val in ordered:
+                members = sorted(rows_x[x_val], key=lambda m: (m[0], m[1]))
+                ys = [m[0] for m in members]
+                zs = [m[1] for m in members]
+                row_color = _projection_row_color(
+                    color, abs(x_val - wall), x_span)
+                xw = [wall] * len(ys)
+                style = '-' if len(members) >= 2 else 'None'
+                _record_proj_line(records, ax.plot(
+                    xw, ys, zs, color=row_color,
+                    linestyle=style, linewidth=1.2,
+                    marker=marker, markersize=4, alpha=0.9,
+                    zorder=zord), 'x', side)
+                for y, z, err in members:
+                    try:
+                        lo, hi = z - err, z + err
+                    except TypeError:
+                        continue
+                    _record_proj_line(records, ax.plot(
+                        [wall, wall], [y, y], [lo, hi],
+                        color=row_color, linewidth=1.2, alpha=0.9,
+                        zorder=zord), 'x', side)
+                    for z_cap in (lo, hi):
+                        _record_proj_line(records, ax.plot(
+                            [wall, wall],
+                            [y - cap_y, y + cap_y], [z_cap, z_cap],
+                            color=row_color, linewidth=1.0, alpha=0.9,
+                            zorder=zord),
+                            'x', side)
+
+        if records:
+            try:
+                existing = getattr(ax, '_llama_proj_records', None)
+                ax._llama_proj_records = \
+                    (list(existing) if existing else []) + records
+            except (AttributeError, TypeError):
+                pass
+    except Exception as exc:
+        print(f"[PlotView] Wall projections skipped: {exc}")
+
+
+def _record_proj_line(records: list, plotted, axis: str, side: str) -> None:
+    """Append (artist, axis, side) glue metadata for one ax.plot() result."""
+    try:
+        artist = plotted[0] if isinstance(plotted, (list, tuple)) else plotted
+    except (TypeError, IndexError):
+        return
+    if artist is None:
+        return
+    records.append((artist, axis, side))
+
+
+def glue_projections_to_box(ax) -> bool:
+    """
+    Snap recorded wall-projection artists to the current box faces.
+
+    Each record made by _draw_wall_projections carries its wall axis
+    ('x' or 'y') and side ('min' or 'max'); the wall coordinate of the
+    artist is rewritten to the matching face of the current limits
+    while data coordinates stay untouched. Row colors and grouping
+    intentionally stay home-referenced. Returns True when at least one
+    artist moved. Never raises.
+    """
+    records = getattr(ax, '_llama_proj_records', None)
+    if not records:
+        return False
+    try:
+        try:
+            x0, x1 = ax.get_xlim3d()
+            y0, y1 = ax.get_ylim3d()
+        except AttributeError:
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+    except Exception:
+        return False
+    faces = {
+        'x': {'min': min(x0, x1), 'max': max(x0, x1)},
+        'y': {'min': min(y0, y1), 'max': max(y0, y1)},
+    }
+    moved = False
+    for record in records:
+        try:
+            line, axis, side = record
+            target = faces[axis][side]
+            xs, ys, zs = line.get_data_3d()
+        except (AttributeError, TypeError, ValueError, KeyError):
+            continue
+        try:
+            xs_arr = np.asarray(xs, dtype=float)
+            ys_arr = np.asarray(ys, dtype=float)
+            zs_arr = np.asarray(zs, dtype=float)
+        except (TypeError, ValueError):
+            continue
+        n = len(xs_arr)
+        if n == 0 or len(ys_arr) != n or len(zs_arr) != n:
+            continue
+        try:
+            if axis == 'y':
+                if np.allclose(ys_arr, target, rtol=0.0, atol=1e-12):
+                    continue
+                line.set_data_3d(xs_arr, np.full(n, target), zs_arr)
+            elif axis == 'x':
+                if np.allclose(xs_arr, target, rtol=0.0, atol=1e-12):
+                    continue
+                line.set_data_3d(np.full(n, target), ys_arr, zs_arr)
+            else:
+                continue
+            moved = True
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return moved
+
+
+def _connect_projection_glue(ax) -> None:
+    """
+    Keep recorded projections on their box faces during navigation.
+
+    Pan and zoom (mouse buttons or toolbar tools) funnel through
+    set_xlim3d/set_ylim3d, so xlim_changed/ylim_changed rewrite every
+    recorded artist synchronously before the pending redraw — no lag,
+    no extra draw, no recursion (the handler never touches limits).
+    Rotation changes no limits and is a no-op. The first draw's
+    autoscale fires the same events, snapping the build-time walls to
+    the exact autoranged faces. Called once per figure by render_3d
+    (guarded by _llama_proj_glued). Best effort — never raises.
+    """
+    try:
+        if getattr(ax, '_llama_proj_glued', False):
+            return
+        if not getattr(ax, '_llama_proj_records', None):
+            return
+
+        def _on_lim_changed(_event_ax=None):
+            try:
+                glue_projections_to_box(ax)
+            except Exception:
+                pass
+
+        ax.callbacks.connect('xlim_changed', _on_lim_changed)
+        ax.callbacks.connect('ylim_changed', _on_lim_changed)
+        ax._llama_proj_glued = True
+    except Exception as exc:
+        print(f"[PlotView] Projection glue skipped: {exc}")
+
+
+def _projection_front(ax, axis: str, side: str) -> bool:
+    """
+    True when the (axis, side) wall faces the viewer.
+
+    The viewer offset direction follows the camera angles (exact for
+    the dolly/azel rotation style with roll 0; approximate in free
+    arcball mode with roll): sx = cos(elev)*cos(azim),
+    sy = cos(elev)*sin(azim). A max-side wall faces the viewer when
+    the matching component is positive, a min-side wall when it is
+    negative. Each wall therefore flips twice per full rotation, at
+    the quadrant boundaries. Fails open (True) when the view state is
+    unreadable, so projections stay visible. Never raises.
+    """
+    try:
+        az = math.radians(ax.azim)
+        el = math.radians(ax.elev)
+    except (AttributeError, TypeError, ValueError):
+        return True
+    try:
+        sx = math.cos(el) * math.cos(az)
+        sy = math.cos(el) * math.sin(az)
+    except (TypeError, ValueError):
+        return True
+    if axis == 'y':
+        return (sy > 0.0) if side == 'max' else (sy < 0.0)
+    if axis == 'x':
+        return (sx > 0.0) if side == 'max' else (sx < 0.0)
+    return True
+
+
+def _update_projection_depth(ax) -> bool:
+    """
+    Flip recorded projection artists between front and back draw order.
+
+    Reads the current camera angles and sets every recorded artist to
+    PROJECTION_ZORDER (wall faces the viewer) or
+    PROJECTION_BACK_ZORDER (wall faces away), via _projection_front().
+    Returns True when at least one zorder changed (caller schedules
+    one follow-up redraw then; the repeat finds nothing changed, so
+    the settle loop always terminates). Never raises.
+    """
+    records = getattr(ax, '_llama_proj_records', None)
+    if not records:
+        return False
+    changed = False
+    for record in records:
+        try:
+            line, axis, side = record
+        except (TypeError, ValueError):
+            continue
+        want = PROJECTION_ZORDER if _projection_front(ax, axis, side) \
+            else PROJECTION_BACK_ZORDER
+        try:
+            if line.get_zorder() != want:
+                line.set_zorder(want)
+                changed = True
+        except (AttributeError, TypeError):
+            continue
+    return changed
 
 
 def _series_face_colors(triangles, x, y, z, color, cmap, style, light):

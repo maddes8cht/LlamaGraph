@@ -13,9 +13,17 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 from view.plot_view import (
+    PROJECTION_BACK_ZORDER,
+    PROJECTION_ZORDER,
+    _connect_projection_glue,
     _draw_unified,
+    _draw_wall_projections,
+    _projection_front,
+    _record_proj_line,
     _set_series_zticks,
     _set_z_label,
+    _update_projection_depth,
+    glue_projections_to_box,
     render_2d,
     render_3d,
 )
@@ -527,7 +535,7 @@ class TestRender3D:
         assert len(surf_collections) >= 1
 
     def test_projection_lines(self):
-        """show_projections=True → extra lines for wall projections."""
+        """Legacy show_projections=True → extra lines for wall projections."""
         points_pp = [(1.0, 2.0, 100.0, 5.0),
                      (2.0, 3.0, 110.0, 5.0)]
         fig, ax = render_3d(
@@ -541,6 +549,32 @@ class TestRender3D:
         )
         # Projections add extra lines beyond the error bars
         assert len(ax.lines) >= 2
+
+    def test_projection_modes(self):
+        """projection_mode selects none/back/front/both walls."""
+        grid = [(1.0, 2.0, 100.0, 5.0), (2.0, 2.0, 110.0, 5.0),
+                (1.0, 3.0, 120.0, 5.0), (2.0, 3.0, 130.0, 5.0)]
+        kwargs: dict = dict(
+            points_tg=[],
+            x_param="x",
+            y_param="y",
+            pp_color="#ff0000",
+            tg_color="#00ff00",
+            show_errors_3d=False,
+            show_surface=False,
+        )
+        _, ax_none = render_3d(points_pp=grid, projection_mode="none", **kwargs)
+        _, ax_back = render_3d(points_pp=grid, projection_mode="back", **kwargs)
+        _, ax_front = render_3d(points_pp=grid, projection_mode="front", **kwargs)
+        _, ax_both = render_3d(points_pp=grid, projection_mode="both", **kwargs)
+        n_none = len(ax_none.lines)
+        n_back = len(ax_back.lines)
+        n_front = len(ax_front.lines)
+        n_both = len(ax_both.lines)
+        assert n_back > n_none
+        assert n_front > n_none
+        assert n_both > n_back
+        assert n_both > n_front
 
     def test_z_label_percent_mode(self):
         """z_label_mode='%' → zlim set to (0, 100)."""
@@ -1644,3 +1678,205 @@ class TestRender3DFallback:
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
         surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
         assert len(surf) == 0
+
+
+# ── Projection box glue (fake axes: no native 3-D needed) ───────────────────
+
+
+class _FakeProjLine:
+    """Minimal Line3D stand-in with get/set_data_3d and zorder."""
+
+    def __init__(self, xs, ys, zs, zorder=2):
+        self._xs = list(xs)
+        self._ys = list(ys)
+        self._zs = list(zs)
+        self._zorder = zorder
+
+    def get_data_3d(self):
+        return self._xs, self._ys, self._zs
+
+    def set_data_3d(self, xs, ys, zs):
+        self._xs = list(xs)
+        self._ys = list(ys)
+        self._zs = list(zs)
+
+    def get_zorder(self):
+        return self._zorder
+
+    def set_zorder(self, level):
+        self._zorder = level
+
+
+class _FakeProjCallbacks:
+    """Minimal CallbackRegistry stand-in recording connect() calls."""
+
+    def __init__(self):
+        self.names: list[str] = []
+
+    def connect(self, name, func):
+        self.names.append(name)
+        return len(self.names)
+
+
+class _FakeProjAx:
+    """Minimal axes stand-in with 3-D limits and a callbacks registry."""
+
+    def __init__(self, xlim=(0.0, 1.0), ylim=(0.0, 1.0),
+                 azim=-60.0, elev=30.0):
+        self._xlim = xlim
+        self._ylim = ylim
+        self.azim = azim
+        self.elev = elev
+        self._llama_proj_records: list = []
+        self.callbacks = _FakeProjCallbacks()
+
+    def get_xlim3d(self):
+        return self._xlim
+
+    def get_ylim3d(self):
+        return self._ylim
+
+
+class TestProjectionGlue:
+    """Tests for glue_projections_to_box() and _connect_projection_glue()."""
+
+    def test_glue_snaps_to_faces(self):
+        """Y-max rows move to the y max face, X-min rows to x min face."""
+        ax = _FakeProjAx(xlim=(0.5, 2.5), ylim=(1.5, 3.5))
+        y_line = _FakeProjLine([1.0, 2.0], [3.0, 3.0], [100.0, 110.0])
+        x_line = _FakeProjLine([1.0, 1.0], [2.0, 3.0], [100.0, 120.0])
+        ax._llama_proj_records = [(y_line, 'y', 'max'), (x_line, 'x', 'min')]
+        assert glue_projections_to_box(ax) is True
+        assert list(y_line._ys) == [3.5, 3.5]
+        assert list(x_line._xs) == [0.5, 0.5]
+        # Data coordinates stay untouched.
+        assert list(y_line._xs) == [1.0, 2.0]
+        assert list(y_line._zs) == [100.0, 110.0]
+        assert list(x_line._ys) == [2.0, 3.0]
+
+    def test_glue_no_move_returns_false(self):
+        """Artists already on their faces → False, no rewrite."""
+        ax = _FakeProjAx(xlim=(0.5, 2.5), ylim=(1.5, 3.5))
+        y_line = _FakeProjLine([1.0], [3.5], [100.0])
+        ax._llama_proj_records = [(y_line, 'y', 'max')]
+        assert glue_projections_to_box(ax) is False
+        assert list(y_line._ys) == [3.5]
+
+    def test_glue_inverted_limits(self):
+        """Reversed limits still map min/max sides to the right faces."""
+        ax = _FakeProjAx(xlim=(2.5, 0.5), ylim=(3.5, 1.5))
+        x_line = _FakeProjLine([2.0, 2.0], [2.0, 3.0], [1.0, 2.0])
+        ax._llama_proj_records = [(x_line, 'x', 'max')]
+        assert glue_projections_to_box(ax) is True
+        assert list(x_line._xs) == [2.5, 2.5]
+
+    def test_glue_never_raises(self):
+        """Missing records, broken artists, or failing limits → False."""
+        assert glue_projections_to_box(object()) is False
+
+        class _BadLim:
+            _llama_proj_records = [(None, 'y', 'max')]
+
+            def get_xlim3d(self):
+                raise RuntimeError("nope")
+
+            def get_ylim3d(self):
+                raise RuntimeError("nope")
+
+        assert glue_projections_to_box(_BadLim()) is False
+
+        ax = _FakeProjAx()
+        ax._llama_proj_records = [
+            (None, 'y', 'max'),
+            ("not-a-line", 'x', 'min'),
+            (_FakeProjLine([], [], []), 'y', 'max'),
+            (_FakeProjLine([1.0], [1.0], [1.0]), 'z', 'max'),
+        ]
+        assert glue_projections_to_box(ax) is False
+
+    def test_record_proj_line(self):
+        """_record_proj_line unwraps ax.plot() result lists."""
+        records: list = []
+        line = _FakeProjLine([1.0], [2.0], [3.0])
+        _record_proj_line(records, [line], 'y', 'max')
+        _record_proj_line(records, line, 'x', 'min')
+        _record_proj_line(records, [None], 'y', 'max')
+        _record_proj_line(records, [], 'y', 'max')
+        assert records == [(line, 'y', 'max'), (line, 'x', 'min')]
+
+    def test_connect_idempotent(self):
+        """Callbacks connect once; empty records connect nothing."""
+        ax = _FakeProjAx()
+        ax._llama_proj_records = [
+            (_FakeProjLine([1.0], [2.0], [3.0]), 'y', 'max')]
+        _connect_projection_glue(ax)
+        assert ax.callbacks.names == ['xlim_changed', 'ylim_changed']
+        assert ax._llama_proj_glued is True
+        _connect_projection_glue(ax)
+        assert ax.callbacks.names == ['xlim_changed', 'ylim_changed']
+
+        bare = _FakeProjAx()
+        _connect_projection_glue(bare)
+        assert bare.callbacks.names == []
+        assert getattr(bare, '_llama_proj_glued', False) is False
+
+    def test_projection_zorder_on_top(self):
+        """Facing walls paint above surfaces, turned-away walls below."""
+
+        class _KwAx(_FakeProjAx):
+            def __init__(self):
+                super().__init__()
+                self.kwargs: list[dict] = []
+
+            def plot(self, *args, **kwargs):
+                self.kwargs.append(kwargs)
+                return [_FakeProjLine(args[0], args[1], args[2])]
+
+        # Home view (azim=-60, elev=30): y-min and x-max face the viewer.
+        ax = _KwAx()
+        pts = [(1.0, 2.0, 100.0, 5.0), (2.0, 2.0, 110.0, 5.0),
+               (1.0, 3.0, 120.0, 5.0), (2.0, 3.0, 130.0, 5.0)]
+        _draw_wall_projections(ax, pts, "#4ec9b0", "o", y_walls=[2.0, 3.0],
+                               x_walls=[1.0, 2.0], x_span=1.0, y_span=1.0,
+                               cap_x=0.1, cap_y=0.1)
+        assert ax.kwargs, "expected projection artists"
+        orders = {kw.get("zorder") for kw in ax.kwargs}
+        assert orders <= {PROJECTION_ZORDER, PROJECTION_BACK_ZORDER}
+        assert PROJECTION_ZORDER in orders  # front walls on top
+        assert PROJECTION_BACK_ZORDER in orders  # back walls below surface
+        assert PROJECTION_ZORDER > 6  # above depth-sorted collections
+
+    def test_projection_front_home_and_rotated(self):
+        """Home: y-min/x-max face the viewer; rotated 180° flips sides."""
+        ax = _FakeProjAx(azim=-60.0, elev=30.0)
+        assert _projection_front(ax, 'y', 'min') is True
+        assert _projection_front(ax, 'x', 'max') is True
+        assert _projection_front(ax, 'y', 'max') is False
+        assert _projection_front(ax, 'x', 'min') is False
+        ax.azim = 120.0  # home + 180°
+        assert _projection_front(ax, 'y', 'min') is False
+        assert _projection_front(ax, 'x', 'max') is False
+        assert _projection_front(ax, 'y', 'max') is True
+        assert _projection_front(ax, 'x', 'min') is True
+
+    def test_projection_front_never_raises(self):
+        """Unreadable view state fails open (visible)."""
+        assert _projection_front(object(), 'y', 'max') is True
+        assert _projection_front(object(), 'q', 'max') is True
+
+    def test_update_projection_depth_flips_and_settles(self):
+        """Rotation flips zorders once; the repeat finds nothing to do."""
+        ax = _FakeProjAx(azim=-60.0, elev=30.0)
+        back_line = _FakeProjLine([1.0], [3.0], [5.0],
+                                  zorder=PROJECTION_BACK_ZORDER)
+        front_line = _FakeProjLine([2.0], [2.0], [6.0],
+                                   zorder=PROJECTION_ZORDER)
+        ax._llama_proj_records = [(back_line, 'y', 'max'),
+                                  (front_line, 'y', 'min')]
+        assert _update_projection_depth(ax) is False  # already correct
+        ax.azim = 120.0  # rotate 180°: sides swap roles
+        assert _update_projection_depth(ax) is True
+        assert back_line.get_zorder() == PROJECTION_ZORDER
+        assert front_line.get_zorder() == PROJECTION_BACK_ZORDER
+        assert _update_projection_depth(ax) is False  # settled
+        assert _update_projection_depth(object()) is False
