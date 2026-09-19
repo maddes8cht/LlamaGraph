@@ -132,7 +132,7 @@ def test_3d_points_generation(tmp_path):
     model.load_files([Path(csv_file)])
     
     # Get 3D points using numeric dimensions
-    points_pp, points_tg, _ = model.get_3d_points("n_prompt_batch", "n_gen_batch", show_ts=True, show_pp=True, show_tg=True, normalize=False, scale_pct=False)
+    points_pp, points_tg, _, _ = model.get_3d_points("n_prompt_batch", "n_gen_batch", show_ts=True, show_pp=True, show_tg=True, normalize=False, scale_pct=False)
     
     assert len(points_pp) == 2
     assert len(points_tg) == 1
@@ -510,7 +510,7 @@ def test_3d_points_with_normalization(tmp_path):
     
     model.load_files([Path(csv_file)])
     
-    points_pp, points_tg, _ = model.get_3d_points("n_prompt_batch", "n_gen_batch", show_ts=True, show_pp=True, show_tg=True, normalize=True, scale_pct=False)
+    points_pp, points_tg, _, _ = model.get_3d_points("n_prompt_batch", "n_gen_batch", show_ts=True, show_pp=True, show_tg=True, normalize=True, scale_pct=False)
     
     # Should have values, and they should be normalized to [0, 1]
     assert len(points_pp) == 2
@@ -530,7 +530,7 @@ def test_3d_points_string_dimension_encoded(tmp_path):
     
     model.load_files([Path(csv_file)])
     
-    points_pp, points_tg, _ = model.get_3d_points("params", "params", show_ts=True, show_pp=True, show_tg=False, normalize=False, scale_pct=False)
+    points_pp, points_tg, _, _ = model.get_3d_points("params", "params", show_ts=True, show_pp=True, show_tg=False, normalize=False, scale_pct=False)
     
     # String "70B" is encoded to categorical code 0.0 → row is kept
     assert len(points_pp) == 1
@@ -551,7 +551,7 @@ def test_3d_points_none_dimension(tmp_path):
     model.load_files([Path(csv_file)])
     
     # x_dim doesn't exist → _resolve_param returns None → any(... is None) → continue
-    points_pp, points_tg, _ = model.get_3d_points("nonexistent_x", "n_prompt_batch", show_ts=True, show_pp=True, show_tg=False, normalize=False, scale_pct=False)
+    points_pp, points_tg, _, _ = model.get_3d_points("nonexistent_x", "n_prompt_batch", show_ts=True, show_pp=True, show_tg=False, normalize=False, scale_pct=False)
     
     assert len(points_pp) == 0
 
@@ -572,7 +572,7 @@ def test_3d_points_filtered(tmp_path):
     # Apply filter that excludes all rows
     model.apply_filters({"n_prompt_batch": {999}})
     
-    points_pp, points_tg, _ = model.get_3d_points("n_prompt_batch", "n_gen_batch", show_ts=True, show_pp=True, show_tg=True, normalize=False, scale_pct=False)
+    points_pp, points_tg, _, _ = model.get_3d_points("n_prompt_batch", "n_gen_batch", show_ts=True, show_pp=True, show_tg=True, normalize=False, scale_pct=False)
     
     assert len(points_pp) == 0
     assert len(points_tg) == 0
@@ -739,7 +739,7 @@ def test_get_3d_points_string_params_returns_categorical(tmp_path):
 
     model.load_files([Path(csv_file)])
 
-    pp, tg, _ = model.get_3d_points(
+    pp, tg, _, _ = model.get_3d_points(
         x_dim="gpu_name", y_dim="params",
         show_ts=True, show_pp=True, show_tg=True,
         normalize=False, scale_pct=False,
@@ -772,7 +772,7 @@ def test_get_3d_points_mixed_params_encodes_string(tmp_path):
 
     model.load_files([Path(csv_file)])
 
-    pp, tg, _ = model.get_3d_points(
+    pp, tg, _, _ = model.get_3d_points(
         x_dim="gpu_name", y_dim="n_gpu_layers",
         show_ts=True, show_pp=True, show_tg=True,
         normalize=False, scale_pct=False,
@@ -806,7 +806,7 @@ def test_get_3d_points_numeric_params_works(tmp_path):
 
     model.load_files([Path(csv_file)])
 
-    pp, tg, _ = model.get_3d_points(
+    pp, tg, _, _ = model.get_3d_points(
         x_dim="n_gpu_layers", y_dim="n_gpu_layers",
         show_ts=True, show_pp=True, show_tg=True,
         normalize=False, scale_pct=False,
@@ -833,7 +833,7 @@ def test_get_3d_points_returns_pre_norm_stats(tmp_path):
 
     model.load_files([Path(csv_file)])
 
-    pp, tg, stats = model.get_3d_points(
+    pp, tg, stats, infos = model.get_3d_points(
         "n_prompt_batch", "n_gen_batch",
         show_ts=True, show_pp=True, show_tg=True,
         normalize=True, scale_pct=False,
@@ -847,6 +847,12 @@ def test_get_3d_points_returns_pre_norm_stats(tmp_path):
     assert min(p[2] for p in pp) == pytest.approx(0.0)
     assert max(p[2] for p in pp) == pytest.approx(1.0)
     assert all(p[2] == pytest.approx(1.0) for p in tg)  # constant → top
+    # Tooltip infos stay aligned 1:1 and carry both metrics raw
+    assert len(infos['pp']) == len(pp) == 2
+    assert len(infos['tg']) == len(tg) == 1
+    assert infos['pp'][0]['ts'] == pytest.approx(100.5)
+    assert infos['pp'][0]['ns'] == pytest.approx(50250.0)
+    assert infos['tg'][0]['x'] == pytest.approx(128.0)
 
 
 def test_get_3d_points_stats_none_for_empty_series(tmp_path):
@@ -861,7 +867,7 @@ def test_get_3d_points_stats_none_for_empty_series(tmp_path):
 
     model.load_files([Path(csv_file)])
 
-    pp, tg, stats = model.get_3d_points(
+    pp, tg, stats, _ = model.get_3d_points(
         "n_prompt_batch", "n_gen_batch",
         show_ts=True, show_pp=True, show_tg=False,
         normalize=True, scale_pct=False,
@@ -873,3 +879,26 @@ def test_get_3d_points_stats_none_for_empty_series(tmp_path):
     assert stats['pp_max'] == pytest.approx(100.5)
     assert stats['tg_min'] is None
     assert stats['tg_max'] is None
+
+
+def test_get_2d_series_carries_both_metrics(tmp_path):
+    """2D points carry raw ts/ns values for tooltips either way round."""
+    model = BenchmarkModel()
+
+    csv_file = tmp_path / "test.csv"
+    csv_file.write_text("""n_prompt,n_gen,avg_ts,stddev_ts,avg_ns,stddev_ns,n_prompt_batch
+1024,0,100.5,5.2,50250,2600,128
+0,256,85.3,4.1,42650,2050,128
+""")
+
+    model.load_files([Path(csv_file)])
+
+    series = model.get_2d_series("n_prompt_batch", show_ts=True,
+                                 show_pp=True, show_tg=True,
+                                 normalize=False, scale_pct=False)
+
+    assert series['pp'][0]['y'] == pytest.approx(100.5)
+    assert series['pp'][0]['ts'] == pytest.approx(100.5)
+    assert series['pp'][0]['ns'] == pytest.approx(50250.0)
+    assert series['tg'][0]['y'] == pytest.approx(85.3)
+    assert series['tg'][0]['ns'] == pytest.approx(42650.0)

@@ -350,7 +350,6 @@ class TestRender2D:
 
 # ── _draw_unified ────────────────────────────────────────────────────────────
 
-
 class TestDrawUnified:
     """Tests for _draw_unified() - helper that averages points by x."""
 
@@ -394,6 +393,38 @@ class TestDrawUnified:
         assert xdata == [1, 2]
         assert ydata[0] == pytest.approx(105.0)  # (100 + 110) / 2
         assert ydata[1] == 200.0
+
+
+# ── average_bucket ────────────────────────────────────────────────────────
+
+
+class TestAverageBucket:
+    """Tooltip math matches the drawn error bar (pure helper)."""
+
+    def test_rms_errors_match_drawn_bar(self):
+        """ts/ns errors use the same RMS combination as y/err."""
+        import math
+        from view.plot_view import average_bucket
+        members = [
+            {'x': 1, 'y': 100.0, 'err': 3.0,
+             'ts': 100.0, 'ts_err': 3.0, 'ns': 50000.0, 'ns_err': 1500.0},
+            {'x': 1, 'y': 110.0, 'err': 4.0,
+             'ts': 110.0, 'ts_err': 4.0, 'ns': 52000.0, 'ns_err': 2000.0},
+        ]
+        y, err, rec = average_bucket(1, members)
+        assert y == pytest.approx(105.0)
+        assert err == pytest.approx(math.sqrt(9 + 16) / 2)
+        assert rec['ts_err'] == pytest.approx(math.sqrt(9 + 16) / 2)
+        assert rec['ns_err'] == pytest.approx(math.sqrt(1500.0 ** 2 + 2000.0 ** 2) / 2)
+        assert rec['ts'] == pytest.approx(105.0)
+
+    def test_missing_metrics_become_none(self):
+        from view.plot_view import average_bucket
+        y, err, rec = average_bucket(1, [{'x': 1, 'y': 100.0, 'err': 5.0}])
+        assert y == pytest.approx(100.0)
+        assert rec['ts'] is None
+        assert rec['ns'] is None
+        assert rec['ts_err'] == 0.0
 
 
 # ── render_3d ────────────────────────────────────────────────────────────────
@@ -883,6 +914,176 @@ class TestMergedSurfaceRender:
         mock_ax.add_collection3d.assert_called_once_with(coll)
 
 
+# ── Click dispatch (nearest hit wins) ──────────────────────────────────
+
+
+class TestDispatchPick:
+    """PlotView._dispatch_pick: figure-wide nearest-hit routing."""
+
+    def _make_view(self, cb):
+        from view.plot_view import PlotView
+        pv = PlotView.__new__(PlotView)
+        pv._pick_cb = cb
+        pv._toolbar = MagicMock()
+        pv._toolbar.mode = ''
+        return pv
+
+    def _mouse(self, x=0.0, y=0.0, button=1):
+        mouse = MagicMock()
+        mouse.button = button
+        mouse.x, mouse.y = x, y
+        return mouse
+
+    def _artist(self, records, hit_inds):
+        artist = MagicMock()
+        artist._llama_records = records
+        artist.get_picker.return_value = lambda _a, _e: (True, {'ind': hit_inds})
+        return artist
+
+    def test_single_hit_calls_back_with_index(self):
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        artist = self._artist([{'x': 1.0}], [0])
+        ax = MagicMock()
+        ax.lines = [artist]
+        ax.collections = []
+        mouse = self._mouse()
+        mouse.canvas.figure.axes = [ax]
+
+        pv._dispatch_pick(mouse)
+
+        cb.assert_called_once()
+        event = cb.call_args.args[0]
+        assert event.artist is artist
+        assert event.ind == [0]
+
+    def test_nearest_hit_wins_across_twin_axes(self):
+        """PP and TG lines on different axes: closer marker wins."""
+        from matplotlib.lines import Line2D
+        cb = MagicMock()
+        pv = self._make_view(cb)
+
+        pp_line = Line2D([512.0], [25.0], picker=5)
+        pp_line._llama_records = [{'x': 512.0}]
+        tg_line = Line2D([512.0], [0.9], picker=5)
+        tg_line._llama_records = [{'x': 512.0}]
+        ax_pp, ax_tg = MagicMock(), MagicMock()
+        ax_pp.lines, ax_pp.collections = [pp_line], []
+        ax_tg.lines, ax_tg.collections = [tg_line], []
+        # Numeric pickers hit both lines; nearest (PP) must win
+        pp_line.set_picker(lambda _a, _e: (True, {'ind': [0]}))
+        tg_line.set_picker(lambda _a, _e: (True, {'ind': [0]}))
+
+        mouse = self._mouse()
+        mouse.canvas.figure.axes = [ax_pp, ax_tg]
+        # Transform maps data→display 1:1 here (no figure); emulate a
+        # click essentially on the PP marker pixel.
+        pp_line.get_transform = MagicMock(return_value=MagicMock(
+            transform=MagicMock(return_value=[[512.0, 25.0]])))
+        tg_line.get_transform = MagicMock(return_value=MagicMock(
+            transform=MagicMock(return_value=[[512.0, 0.9]])))
+        mouse.x, mouse.y = 512.0, 25.0
+
+        pv._dispatch_pick(mouse)
+
+        cb.assert_called_once()
+        assert cb.call_args.args[0].artist is pp_line
+
+    def test_no_hit_calls_back_with_none(self):
+        """Clicks without a data hit notify with None (overlay dismissal)."""
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        artist = MagicMock()
+        artist._llama_records = [{'x': 1.0}]
+        artist.get_picker.return_value = lambda _a, _e: (False, {})
+        ax = MagicMock()
+        ax.lines, ax.collections = [artist], []
+        mouse = self._mouse()
+        mouse.canvas.figure.axes = [ax]
+
+        pv._dispatch_pick(mouse)
+
+        cb.assert_called_once_with(None)
+
+    def test_press_release_without_move_dispatches(self):
+        """Click (no drag) reaches dispatch with the release event."""
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        artist = self._artist([{'x': 1.0}], [0])
+        ax = MagicMock()
+        ax.lines, ax.collections = [artist], []
+        press = self._mouse(x=10.0, y=10.0)
+        release = self._mouse(x=12.0, y=11.0)
+        release.canvas.figure.axes = [ax]
+
+        pv._on_press(press)
+        pv._on_release(release)
+
+        cb.assert_called_once()
+        assert cb.call_args.args[0].artist is artist
+
+    def test_drag_suppresses_pick_and_dismiss(self):
+        """Rotation drags trigger neither tooltip nor dismissal."""
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        artist = self._artist([{'x': 1.0}], [0])
+        ax = MagicMock()
+        ax.lines, ax.collections = [artist], []
+        press = self._mouse(x=10.0, y=10.0)
+        release = self._mouse(x=100.0, y=100.0)
+        release.canvas.figure.axes = [ax]
+
+        pv._on_press(press)
+        pv._on_release(release)
+
+        cb.assert_not_called()
+
+    def test_non_left_press_never_dispatches(self):
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        press = self._mouse(button=3)
+        release = self._mouse(button=3)
+        release.canvas.figure.axes = []
+
+        pv._on_press(press)
+        pv._on_release(release)
+
+        cb.assert_not_called()
+
+    def test_pan_mode_and_right_click_ignored(self):
+        cb = MagicMock()
+        pv = self._make_view(cb)
+        artist = self._artist([{'x': 1.0}], [0])
+        ax = MagicMock()
+        ax.lines, ax.collections = [artist], []
+        mouse = self._mouse()
+        mouse.canvas.figure.axes = [ax]
+
+        pv._toolbar.mode = 'pan/zoom'
+        pv._dispatch_pick(mouse)
+        cb.assert_not_called()
+
+        pv._toolbar.mode = ''
+        pv._dispatch_pick(self._mouse(button=3))
+        cb.assert_not_called()
+
+    def test_nearest_hit_index_prefers_closest(self):
+        """_nearest_hit_index returns the closest candidate index."""
+        from matplotlib.lines import Line2D
+        from view.plot_view import _nearest_hit_index
+        line = Line2D([0.0, 10.0, 20.0], [0.0, 0.0, 0.0])
+        mouse = MagicMock()
+        mouse.x, mouse.y = 10.5, 0.5
+        dist, idx = _nearest_hit_index(line, [0, 1, 2], mouse)
+        assert idx == 1
+        assert dist == pytest.approx(0.7071, abs=1e-3)
+
+    def test_nearest_hit_index_fallback_for_other_artists(self):
+        from view.plot_view import _nearest_hit_index
+        dist, idx = _nearest_hit_index(MagicMock(), [3, 5], MagicMock())
+        assert (dist, idx) == (0.0, 3)
+
+
 # ── _level_plane_surface ─────────────────────────────────────────────────
 
 
@@ -912,6 +1113,93 @@ class TestLevelPlaneSurface:
         assert verts[:, :, 0].max() == pytest.approx(4.0)
         assert verts[:, :, 1].min() == pytest.approx(10.0)
         assert verts[:, :, 1].max() == pytest.approx(20.0)
+
+
+# ── Marker-only picking ──────────────────────────────────────────────────
+
+
+class TestMarkerOnlyPicker:
+    """_marker_only_picker hits markers, not line segments or whiskers."""
+
+    def _line(self):
+        from matplotlib.lines import Line2D
+        return Line2D([0.0, 10.0, 20.0], [0.0, 0.0, 0.0])
+
+    def test_hit_near_marker(self):
+        from view.plot_view import _marker_only_picker
+        mouse = MagicMock()
+        mouse.x, mouse.y = 10.5, 0.5
+        hit, props = _marker_only_picker(self._line(), mouse)
+        assert hit is True
+        assert 1 in list(props.get('ind', []))
+
+    def test_miss_far_from_markers(self):
+        from view.plot_view import _marker_only_picker
+        mouse = MagicMock()
+        mouse.x, mouse.y = 5.0, 50.0
+        hit, _ = _marker_only_picker(self._line(), mouse)
+        assert hit is False
+
+    def test_miss_on_segment_midpoint_off_line(self):
+        """Mid-segment point far off the line → no hit (segments ignored)."""
+        from view.plot_view import _marker_only_picker
+        mouse = MagicMock()
+        mouse.x, mouse.y = 5.0, 9.0  # above the segment between markers
+        hit, _ = _marker_only_picker(self._line(), mouse)
+        assert hit is False
+
+
+class TestAttachRecords:
+    """_attach_records tags the data line and silences the rest."""
+
+    def test_data_line_tagged_rest_silenced(self):
+        from view.plot_view import _attach_records
+        container = MagicMock()
+        data_line, whisker = MagicMock(), MagicMock()
+        container.__getitem__.return_value = data_line
+        container.get_children.return_value = [data_line, whisker]
+        pts = [{'x': 1.0, 'ts': 2.0, 'ts_err': 0.1,
+                'ns': 3.0, 'ns_err': 0.2}]
+
+        _attach_records(container, pts, "PP: f")
+
+        assert data_line._llama_records == [
+            {'x': 1.0, 'ts': 2.0, 'ts_err': 0.1, 'ns': 3.0, 'ns_err': 0.2,
+             'label': 'PP: f'}]
+        data_line.set_picker.assert_called_once()
+        whisker.set_picker.assert_called_once_with(False)
+
+    def test_broken_container_never_raises(self):
+        from view.plot_view import _attach_records
+        _attach_records(MagicMock(side_effect=RuntimeError("bad")),
+                        [{'x': 1.0}])  # must not raise
+
+
+# ── interp_surface_z ────────────────────────────────────────────────────
+
+
+class TestInterpSurfaceZ:
+    """Tests for interp_surface_z (pure helper, no axes required)."""
+
+    def test_inside_hull_interpolates(self):
+        from view.plot_view import interp_surface_z
+        xs = [0.0, 1.0, 0.0, 1.0]
+        ys = [0.0, 0.0, 1.0, 1.0]
+        zs = [10.0, 20.0, 30.0, 40.0]
+        assert interp_surface_z(xs, ys, zs, 0.5, 0.5) == \
+            pytest.approx(25.0)
+
+    def test_outside_hull_returns_none(self):
+        from view.plot_view import interp_surface_z
+        xs = [0.0, 1.0, 0.0, 1.0]
+        ys = [0.0, 0.0, 1.0, 1.0]
+        zs = [10.0, 20.0, 30.0, 40.0]
+        assert interp_surface_z(xs, ys, zs, 5.0, 5.0) is None
+
+    def test_too_few_points_returns_none(self):
+        from view.plot_view import interp_surface_z
+        assert interp_surface_z([0.0], [0.0], [1.0], 0.0, 0.0) is None
+        assert interp_surface_z([], [], [], 0.0, 0.0) is None
 
 
 # ── Measured value ticks in renderers ────────────────────────────────────
@@ -955,6 +1243,24 @@ class TestValueTicksRender:
         )
         ax = fig.axes[0]
         assert len(ax.get_xticklabels()) > 0
+
+    def test_render_2d_ylabel_follows_metric(self):
+        """Y labels name Tokens/s vs. Time (ns) by metric."""
+        kw = dict(
+            datasets_raw=[{'path': Path('/f.csv')}],
+            series_data={'pp': [{'x': 512.0, 'y': 1.0, 'err': 0.0,
+                                 'file_idx': 0}],
+                         'tg': []},
+            x_param="n_batch",
+            pp_base="#ff0000",
+            tg_base="#00ff00",
+            show_pp_flags=[True],
+            show_tg_flags=[False],
+            do_unify=False,
+        )
+        assert render_2d(**kw).axes[0].get_ylabel() == "PP Tokens/s"
+        assert render_2d(show_ts=False, **kw).axes[0].get_ylabel() == \
+            "PP Time (ns)"
 
     def test_render_3d_applies_xy_ticks(self):
         """render_3d labels X/Y with the given measured values."""
@@ -1141,8 +1447,24 @@ class TestPlotView:
                 inst.mpl_connect.assert_not_called()
         self._cleanup_pv()
 
+    def test_render_3d_with_pick_cb(self):
+        """render with fig + ax3d + on_pick_cb → press+release dispatch."""
+        pv = self._make_pv()
+        fig = Figure()
+        ax = MagicMock(spec=['elev', 'azim'])
+        pick_cb = MagicMock()
+
+        with patch('view.plot_view.FigureCanvasTkAgg') as mock_canvas_cls:
+            with patch('view.plot_view.CustomNavigationToolbar'):
+                pv.render(fig, ax3d=ax, on_pick_cb=pick_cb)
+
+                inst = mock_canvas_cls.return_value
+                kinds = [c.args[0] for c in inst.mpl_connect.call_args_list]
+                assert kinds == ['button_press_event', 'button_release_event']
+        self._cleanup_pv()
+
     def test_render_2d_with_pick_cb(self):
-        """render with fig and on_pick_cb (ax3d=None) → mpl_connect called."""
+        """render with fig and on_pick_cb → press+release dispatch wiring."""
         pv = self._make_pv()
         fig = Figure()
         pick_cb = MagicMock()
@@ -1152,7 +1474,8 @@ class TestPlotView:
                 pv.render(fig, on_pick_cb=pick_cb)
 
                 inst = mock_canvas_cls.return_value
-                inst.mpl_connect.assert_called_once_with('pick_event', pick_cb)
+                kinds = [c.args[0] for c in inst.mpl_connect.call_args_list]
+                assert kinds == ['button_press_event', 'button_release_event']
         self._cleanup_pv()
 
     def test_redraw_idle_with_canvas(self):

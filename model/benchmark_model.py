@@ -321,7 +321,14 @@ class BenchmarkModel:
                 if y_val is None:
                     continue
 
-                groups[(x_val, row['type'])].append((float(y_val), float(e_val)))
+                groups[(x_val, row['type'])].append({
+                    'y': float(y_val),
+                    'err': float(e_val),
+                    'ts': _safe_float(row.get('ts_val')),
+                    'ts_err': _safe_float(row.get('ts_err')) or 0.0,
+                    'ns': _safe_float(row.get('ns_val')),
+                    'ns_err': _safe_float(row.get('ns_err')) or 0.0,
+                })
 
             # Aggregate per-file pp/tg
             pp_agg = _aggregate_groups(groups, 'pp')
@@ -351,15 +358,19 @@ class BenchmarkModel:
         show_tg: bool,
         normalize: bool,
         scale_pct: bool,
-    ) -> tuple[list[tuple], list[tuple], dict]:
+    ) -> tuple[list[tuple], list[tuple], dict, dict]:
         """
         Build raw (x, y, z, err) point lists for the 3-D plot engine.
 
-        Returns (points_pp, points_tg, stats) where each point is a
-        4-tuple (x_val, y_val, z_val, z_err) and stats holds the
+        Returns (points_pp, points_tg, stats, infos) where each point
+        is a 4-tuple (x_val, y_val, z_val, z_err), stats holds the
         pre-normalization Z minima/maxima per series:
         {'pp_min', 'pp_max', 'tg_min', 'tg_max'} (None when a series
-        is empty). With *normalize* set, each series is independently
+        is empty), and infos holds per-point tooltip payloads aligned
+        1:1 with the point lists:
+        {'pp': [...], 'tg': [...]} with
+        {'x', 'y', 'ts', 'ts_err', 'ns', 'ns_err'} each.
+        With *normalize* set, each series is independently
         min-max stretched to the full range, so both series fill the
         whole plot height — the same profile each shows on its own.
 
@@ -372,6 +383,8 @@ class BenchmarkModel:
         self._cat_mappings.clear()
         points_pp: list[tuple] = []
         points_tg: list[tuple] = []
+        infos_pp: list[dict] = []
+        infos_tg: list[dict] = []
 
         for entry in self._datasets:
             data = entry['data']
@@ -399,11 +412,21 @@ class BenchmarkModel:
                     fy = self._cat_encode(y_val, y_dim)
 
                 pt = (fx, fy, float(z_val), e_val)
+                info = {
+                    'x': x_val,
+                    'y': y_val,
+                    'ts': _safe_float(row.get('ts_val')),
+                    'ts_err': _safe_float(row.get('ts_err')) or 0.0,
+                    'ns': _safe_float(row.get('ns_val')),
+                    'ns_err': _safe_float(row.get('ns_err')) or 0.0,
+                }
 
                 if row['type'] == 'pp' and show_pp:
                     points_pp.append(pt)
+                    infos_pp.append(info)
                 elif row['type'] == 'tg' and show_tg:
                     points_tg.append(pt)
+                    infos_tg.append(info)
 
         # Pre-normalization minima/maxima per series, so the view can
         # label the Z axis in absolute units even though both series
@@ -417,11 +440,12 @@ class BenchmarkModel:
 
         # Independent per-series min-max stretch (each series fills the
         # full height); on the shared Z axis both therefore span [0, 1].
+        # Infos stay aligned 1:1 (same order, untouched values).
         if normalize:
             points_pp = _normalize_3d_points(points_pp, scale_pct)
             points_tg = _normalize_3d_points(points_tg, scale_pct)
 
-        return points_pp, points_tg, stats
+        return points_pp, points_tg, stats, {'pp': infos_pp, 'tg': infos_tg}
 
     def _cat_encode(self, val, dim: str) -> float:
         """Map a string value to a sequential float code for the given dimension."""
@@ -462,33 +486,56 @@ class BenchmarkModel:
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
+def _safe_float(value) -> Optional[float]:
+    """Float conversion returning None instead of raising."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def _aggregate_groups(
     groups: dict[tuple, list], row_type: str
 ) -> list[dict]:
     """
-    Convert (x_val, type) → [(y, err)] groups into averaged data points
-    sorted by x_val.
+    Convert (x_val, type) → [measurement dicts] groups into averaged
+    data points sorted by x_val.
+
+    Each point carries the active metric as 'y'/'err' plus the raw
+    'ts'/'ts_err'/'ns'/'ns_err' values for tooltips (either metric may
+    be None when the source row lacked it).
     """
     result = []
     relevant = {k: v for k, v in groups.items() if k[1] == row_type}
     for (x_val, _), measurements in sorted(relevant.items()):
-        y_vals = [m[0] for m in measurements]
-        e_vals = [m[1] for m in measurements]
+        y_vals = [m['y'] for m in measurements]
+        e_vals = [m['err'] for m in measurements]
         mean_y = sum(y_vals) / len(y_vals)
-        max_e  = max(e_vals)
-        result.append({'x': x_val, 'y': mean_y, 'err': max_e})
+        max_e = max(e_vals)
+        point: dict = {'x': x_val, 'y': mean_y, 'err': max_e}
+        for key in ('ts', 'ts_err', 'ns', 'ns_err'):
+            vals = [m[key] for m in measurements if m[key] is not None]
+            if key.endswith('_err'):
+                point[key] = max(vals) if vals else 0.0
+            else:
+                point[key] = sum(vals) / len(vals) if vals else None
+        result.append(point)
     return result
 
 
 def _normalize_agg(points: list[dict], scale_pct: bool) -> list[dict]:
-    """Normalize a list of {'x', 'y', 'err'} points in-place (returns new list)."""
+    """Normalize a list of {'x', 'y', 'err', ...} points in-place (returns new list)."""
     y_vals = [p['y'] for p in points]
     e_vals = [p['err'] for p in points]
     ny, ne, _ = normalize_series(y_vals, e_vals, scale_pct)
-    return [
-        {'x': p['x'], 'y': ny[i], 'err': ne[i]}
-        for i, p in enumerate(points)
-    ]
+    out = []
+    for i, p in enumerate(points):
+        q = dict(p)
+        q['y'], q['err'] = ny[i], ne[i]
+        out.append(q)
+    return out
 
 
 def _normalize_3d_points(

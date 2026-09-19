@@ -15,6 +15,8 @@ The Presenter is the only place that imports from both model/ and view/.
 
 from __future__ import annotations
 
+import math
+import tkinter as tk
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +24,19 @@ from model.benchmark_model import BenchmarkModel
 from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
 from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
-from view.plot_view import thin_value_ticks, render_2d, render_3d
+from view.plot_view import (
+    average_bucket,
+    interp_surface_z,
+    thin_value_ticks,
+    render_2d,
+    render_3d,
+)
+
+# Tooltip appearance/behavior (shared by the 2-D and 3-D pick handlers)
+TOOLTIP_ALPHA = 0.85
+TOOLTIP_BORDER = '#888888'
+TOOLTIP_TTL_MS = 6000
+TOOLTIP_SEPARATOR = "─" * 26
 
 
 class PlotterPresenter:
@@ -76,6 +90,12 @@ class PlotterPresenter:
         self._home_cam_3d: Optional[dict] = None
         self._current_3d_ax = None
         self._last_3d_signature: Optional[tuple] = None
+
+        # Tooltip context (axis names + per-point payloads)
+        self._last_2d: dict = {}
+        self._last_3d: dict = {}
+        self._active_tip = None
+        self._connector_line = None
 
         # Connect everything
         self._wire_callbacks()
@@ -449,7 +469,7 @@ class PlotterPresenter:
             self._render_plot()
 
     def _update_metric_button(self) -> None:
-        text = "Switch: ns" if self._show_ts else "Switch: t/s"
+        text = "t/s → time" if self._show_ts else "time → t/s"
         self._win.set_metric_button_text(text)
 
     # ── 3-D camera ────────────────────────────────────────────────────────────
@@ -550,6 +570,7 @@ class PlotterPresenter:
             normalize=normalize,
             scale_pct=scale_pct,
         )
+        self._last_2d = {'series': series_data, 'x_param': x_param}
 
         fig = render_2d(
             datasets_raw=self._model.get_datasets_raw(),
@@ -562,6 +583,7 @@ class PlotterPresenter:
             do_unify=self._win.unify,
             normalize=normalize,
             z_label_mode=self._win.z_label_mode,
+            show_ts=self._show_ts,
             x_ticks=thin_value_ticks(
                 [p['x'] for p in series_data['pp']
                  if show_pp_flags[p['file_idx']]]
@@ -609,7 +631,7 @@ class PlotterPresenter:
         if self._current_3d_ax is not None:
             saved_cam = self._save_camera(self._current_3d_ax)
 
-        points_pp, points_tg, stats = self._model.get_3d_points(
+        points_pp, points_tg, stats, infos = self._model.get_3d_points(
             x_dim=x_param,
             y_dim=y_param,
             show_ts=self._show_ts,
@@ -654,10 +676,15 @@ class PlotterPresenter:
             tg_max=stats['tg_max'],
             x_ticks=x_ticks,
             y_ticks=y_ticks,
+            infos_pp=infos['pp'],
+            infos_tg=infos['tg'],
         )
 
         self._current_3d_ax = ax
-        self._win.plot_view.render(fig, ax3d=ax)
+        self._last_3d = {'infos': infos, 'x_param': x_param, 'y_param': y_param,
+                         'points': {'pp': points_pp, 'tg': points_tg}}
+        self._connector_line = None  # new canvas drops the old connector
+        self._win.plot_view.render(fig, ax3d=ax, on_pick_cb=self._on_pick_3d)
 
         # Apply categorical tick labels if dimensions are string-valued
         if x_labels is not None:
@@ -680,30 +707,379 @@ class PlotterPresenter:
                 self._restore_camera(ax, saved_cam)
             self._win.plot_view.redraw_idle()
 
-    # ── Pick event (2-D tooltip) ──────────────────────────────────────────────
+    # ── Pick events (2-D/3-D tooltips) ─────────────────────────────────────
+
+    @staticmethod
+    def _fmt_axis_value(value) -> str:
+        if value is None:
+            return "n/a"
+        if isinstance(value, str):
+            return value
+        return f"{value:g}"
+
+    @staticmethod
+    def _fmt_uncertain(value, err, sig=2, grouping=False) -> tuple:
+        """
+        Value ± error strings with precision derived from the error.
+
+        The error is rounded to *sig* significant digits and the value
+        to the same decimal position, so the value never claims more
+        precision than its uncertainty supports (and the error never
+        carries a meaningless digit tail).
+        """
+        if value is None:
+            return "n/a", None
+        if not err or not math.isfinite(err) or err <= 0 \
+                or not math.isfinite(value):
+            plain = f"{value:,.0f}" if grouping else f"{value:g}"
+            return plain, None
+        exp = math.floor(math.log10(abs(err))) - sig + 1
+        if exp >= 0:
+            if grouping:
+                return (f"{round(value, -exp):,.0f}",
+                        f"{round(err, -exp):,.0f}")
+            return f"{round(value, -exp):.0f}", f"{round(err, -exp):.0f}"
+        return (f"{round(value, -exp):.{-exp}f}",
+                f"{round(err, -exp):.{-exp}f}")
+
+    @staticmethod
+    def _ts_parts(record: dict) -> tuple:
+        """(value, error) strings for t/s; error None when absent."""
+        return PlotterPresenter._fmt_uncertain(
+            record.get('ts'), record.get('ts_err'))
+
+    @staticmethod
+    def _ns_unit(value: float) -> tuple:
+        """(factor, unit) scaling nanoseconds to a readable unit."""
+        magnitude = abs(value)
+        if magnitude >= 1e9:
+            return 1e-9, "s"
+        if magnitude >= 1e6:
+            return 1e-6, "ms"
+        if magnitude >= 1e3:
+            return 1e-3, "µs"
+        return 1.0, "ns"
+
+    @staticmethod
+    def _ns_parts(record: dict) -> tuple:
+        """(value, error) strings for latency, auto-scaled ns/µs/ms/s."""
+        value, err = record.get('ns'), record.get('ns_err')
+        if value is None:
+            return "n/a", None
+        factor, unit = PlotterPresenter._ns_unit(value)
+        val_str, err_str = PlotterPresenter._fmt_uncertain(
+            value * factor, err * factor if err else 0.0)
+        if err_str is None:
+            return f"{val_str} {unit}", None
+        return val_str, f"{err_str} {unit}"
+
+    @staticmethod
+    def _metric_rows(record: dict) -> list:
+        """Shared (name, value, error) rows for t/s and ns."""
+        ts_v, ts_e = PlotterPresenter._ts_parts(record)
+        ns_v, ns_e = PlotterPresenter._ns_parts(record)
+        return [("t/s:", ts_v, ts_e), ("time:", ns_v, ns_e)]
+
+    @staticmethod
+    def _tooltip_table(blocks: list) -> str:
+        """
+        Table-aligned tooltip text (monospace assumed).
+
+        *blocks* are {'header': str|None, 'rows': [(name, value,
+        error|None), ...], 'tag': str|None} dicts. Names share one
+        left-aligned column, values one right-aligned column, and
+        errors one right-aligned column after "±", across all blocks —
+        so ± signs sit exactly below each other.
+        """
+        names = [n for b in blocks for n, _, _ in b['rows']]
+        vals = [v for b in blocks for _, v, _ in b['rows']]
+        errs = [e for b in blocks for _, _, e in b['rows'] if e is not None]
+        name_w = max([len(n) for n in names] or [0])
+        val_w = max([len(v) for v in vals] or [0])
+        err_w = max([len(e) for e in errs] or [0])
+        out = []
+        for i, block in enumerate(blocks):
+            if i > 0:
+                out.append(TOOLTIP_SEPARATOR)
+            if block.get('header'):
+                out.append(block['header'])
+            for name, value, err in block['rows']:
+                line = f"{name:<{name_w}}  {value:>{val_w}}"
+                if err is not None:
+                    line += f"  ± {err:>{err_w}}"
+                out.append(line)
+            if block.get('tag'):
+                out.append(block['tag'])
+        return "\n".join(out)
+
+    @staticmethod
+    def _record_block(first, coord_rows: list, record: dict) -> dict:
+        """One tooltip block: header, coordinate rows, metric rows."""
+        rows = list(coord_rows) + PlotterPresenter._metric_rows(record)
+        tag = None
+        if isinstance(first, str) and "Unified" in first:
+            tag = "🔗 Combined"
+        return {'header': first, 'rows': rows, 'tag': tag}
+
+    @staticmethod
+    def _clean_label(label) -> Optional[str]:
+        """Usable label line or None for missing/default labels."""
+        if not isinstance(label, str) or not label or label.startswith("_"):
+            return None
+        return label
+
+    def _counterpart_label_2d(self, series: str, file_idx) -> str:
+        """Counterpart label matching render_2d's naming."""
+        if file_idx is None:
+            return "Unified PP" if series == 'pp' else "Unified TG"
+        try:
+            stem = Path(
+                self._model.get_datasets_raw()[file_idx]['path']).stem
+        except (IndexError, KeyError, TypeError):
+            stem = "?"
+        return f"PP: {stem}" if series == 'pp' else f"TG: {stem}"
+
+    def _counterpart_visible_2d(self, series: str, file_idx) -> bool:
+        """Whether the counterpart series is currently displayed."""
+        ls = self._win.left_sidebar
+        if series == 'pp':
+            per_file = ls.get_pp_flag(file_idx) if file_idx is not None else True
+            return bool(self._win.show_pp and per_file)
+        per_file = ls.get_tg_flag(file_idx) if file_idx is not None else True
+        return bool(self._win.show_tg and per_file)
+
+    def _find_counterpart_2d(self, rec: dict):
+        """
+        Counterpart point of the other series at the same x value.
+
+        Returns (label, record) or None. Per-file points match within
+        the same file; unified lines (no file_idx) average the other
+        series across all *displayed* files with the same math the
+        unified line itself uses. Only displayed series qualify, and
+        only on exact x match — no nearest-point guessing.
+        """
+        series = rec.get('series')
+        other = 'tg' if series == 'pp' else 'pp' if series == 'tg' else None
+        if other is None:
+            return None
+        file_idx = rec.get('file_idx')
+        cands = [p for p in (self._last_2d.get('series') or {}).get(other, [])
+                 if p.get('x') == rec.get('x')]
+        if file_idx is not None:
+            cands = [p for p in cands if p.get('file_idx') == file_idx]
+            if not cands or not self._counterpart_visible_2d(other, file_idx):
+                return None
+            return self._counterpart_label_2d(other, file_idx), cands[0]
+        # Unified: average across displayed files only (mirrors the line).
+        visible = [p for p in cands
+                   if self._counterpart_visible_2d(other, p.get('file_idx'))]
+        if not visible:
+            return None
+        _, _, avg_rec = average_bucket(rec.get('x'), visible)
+        avg_rec['label'] = self._counterpart_label_2d(other, None)
+        avg_rec['series'] = other
+        return avg_rec['label'], avg_rec
+
+    def _find_counterpart_3d(self, label: str, ind: int):
+        """
+        Counterpart info of the other series at the same (x, y).
+
+        Returns (label, info) or None when the other series is hidden
+        or has no point at exactly that position. Points carry no file
+        identity, so with several loaded files sharing an (x, y) the
+        first hit wins even across files — accepted: combined 3-D
+        tooltips compare positions, not file provenance.
+        """
+        series = 'pp' if label == 'PP' else 'tg' if label == 'TG' else None
+        if series is None:
+            return None
+        other = 'tg' if series == 'pp' else 'pp'
+        if other == 'pp' and not self._win.show_pp:
+            return None
+        if other == 'tg' and not self._win.show_tg:
+            return None
+        points = self._last_3d.get('points', {}) or {}
+        infos = self._last_3d.get('infos', {}) or {}
+        own = points.get(series) or []
+        if not (0 <= ind < len(own)):
+            return None
+        x, y = own[ind][0], own[ind][1]
+        others = points.get(other) or []
+        other_infos = infos.get(other) or []
+        for j, q in enumerate(others):
+            if q[0] == x and q[1] == y and j < len(other_infos):
+                return ('PP' if other == 'pp' else 'TG'), other_infos[j]
+        return None
+
+    def _show_tooltip(self, text: str) -> None:
+        # One tooltip at a time: drop the previous one so rapid picks
+        # do not stack overlapping windows.
+        old_tip = self._active_tip
+        if old_tip is not None:
+            try:
+                old_tip.destroy()
+            except Exception:
+                pass
+            self._active_tip = None
+        tip = tk.Toplevel(self._win.root)
+        tip.wm_overrideredirect(True)
+        # Anchor at the real pointer position: mouseevent coordinates
+        # are canvas-relative, which parked old tooltips far off target.
+        try:
+            px, py = tip.winfo_pointerx() + 16, tip.winfo_pointery() + 12
+        except Exception:
+            px, py = 100, 100
+        tip.geometry(f"+{px}+{py}")
+        tip.configure(bg='#1e1e1e', bd=1, relief='solid',
+                      highlightbackground=TOOLTIP_BORDER,
+                      highlightthickness=1)
+        try:
+            tip.attributes('-alpha', TOOLTIP_ALPHA)
+        except Exception:
+            pass  # translucency unsupported on this platform
+
+        tk.Label(
+            tip, text=text,
+            bg='#1e1e1e', fg='#d4d4d4',
+            font=('Consolas', 9), padx=5, pady=3,
+        ).pack()
+        self._active_tip = tip
+        tip.after(TOOLTIP_TTL_MS, lambda: self._hide_tooltip(tip))
+
+    def _hide_tooltip(self, tip) -> None:
+        """Deferred tooltip cleanup that survives app teardown."""
+        try:
+            tip.destroy()
+        except Exception:
+            pass
+        if self._active_tip is tip:
+            self._active_tip = None
 
     def _on_pick(self, event) -> None:
+        """2-D tooltip: axis name, both metrics with errors."""
+        if event is None:
+            return  # empty click: nothing transient in 2-D
         if not hasattr(event, 'ind') or len(event.ind) == 0:
             return
         ind = event.ind[0]
         label = event.artist.get_label()
+        records = getattr(event.artist, '_llama_records', None)
+
+        if isinstance(records, list) and 0 <= ind < len(records):
+            rec = records[ind]
+            # Series label rides in the record: errorbar() keeps it on
+            # the container (for the legend) while the pickable data
+            # line itself stays at the default "_no_legend_".
+            first = self._clean_label(rec.get('label') or label)
+            x_title = (self._last_2d.get('x_param') or 'x').replace('_', ' ').title()
+            coord = [(x_title + ":", self._fmt_axis_value(rec.get('x')), None)]
+            blocks = [self._record_block(first, coord, rec)]
+            counter = self._find_counterpart_2d(rec)
+            if counter is not None:
+                clabel, crec = counter
+                ccoord = [(x_title + ":", self._fmt_axis_value(crec.get('x')), None)]
+                blocks.append(self._record_block(clabel, ccoord, crec))
+            self._show_tooltip(self._tooltip_table(blocks))
+            return
+
+        # Fallback for artists without attached records (e.g. a stray
+        # whisker pick): unnamed artists show values without a label line.
         xdata = event.artist.get_xdata()
         ydata = event.artist.get_ydata()
+        x_title = (self._last_2d.get('x_param') or 'x').replace('_', ' ').title()
+        fblock = {'header': self._clean_label(label),
+                  'rows': [(x_title + ":",
+                            self._fmt_axis_value(xdata[ind]), None),
+                           ("Y:", f"{ydata[ind]:.2f}", None)],
+                  'tag': None}
+        if fblock['header'] is not None and "Unified" in fblock['header']:
+            fblock['tag'] = "🔗 Combined"
+        self._show_tooltip(self._tooltip_table([fblock]))
 
-        tip = __import__('tkinter').Toplevel(self._win.root)
-        tip.wm_overrideredirect(True)
-        mx = event.mouseevent.x + 20
-        my = event.mouseevent.y + 20
-        tip.geometry(f"+{mx}+{my}")
-        tip.configure(bg='#1e1e1e', bd=1, relief='solid')
+    def _on_pick_3d(self, event) -> None:
+        """3-D tooltip: both axis names/values plus both metrics."""
+        if event is None:
+            if self._clear_connector():
+                self._win.plot_view.redraw_idle()
+            return
+        if not hasattr(event, 'ind') or len(event.ind) == 0:
+            return
+        ind = event.ind[0]
+        label = event.artist.get_label()
+        if label not in ("PP", "TG"):
+            return
+        records = getattr(event.artist, '_llama_records', None)
+        if isinstance(records, list) and 0 <= ind < len(records):
+            info = records[ind]
+        else:
+            infos = self._last_3d.get('infos', {}).get(
+                'pp' if label == 'PP' else 'tg')
+            if not isinstance(infos, list) or not (0 <= ind < len(infos)):
+                return
+            info = infos[ind]
+        x_title = (self._last_3d.get('x_param') or 'x').replace('_', ' ').title()
+        y_title = (self._last_3d.get('y_param') or 'y').replace('_', ' ').title()
 
-        txt = f"{label}\nX: {xdata[ind]}\nY: {ydata[ind]:.2f}"
-        if "Unified" in label:
-            txt += "\n🔗 Combined"
+        def block(slave_label, slave_info):
+            return self._record_block(
+                slave_label,
+                [(x_title + ":", self._fmt_axis_value(slave_info.get('x')), None),
+                 (y_title + ":", self._fmt_axis_value(slave_info.get('y')), None)],
+                slave_info)
 
-        __import__('tkinter').Label(
-            tip, text=txt,
-            bg='#1e1e1e', fg='#d4d4d4',
-            font=('Consolas', 9), padx=5, pady=3,
-        ).pack()
-        tip.after(2000, tip.destroy)
+        # PP block always on top, TG below; single block without match.
+        counter = self._find_counterpart_3d(label, ind)
+        if counter is not None and label == 'TG':
+            blocks = [block(*counter), block(label, info)]
+        elif counter is not None:
+            blocks = [block(label, info), block(*counter)]
+        else:
+            blocks = [block(label, info)]
+        self._show_tooltip(self._tooltip_table(blocks))
+        self._update_connector(label, ind)
+
+    def _update_connector(self, label: str, ind: int) -> None:
+        """
+        Vertical dashed line from the picked point to the other surface.
+
+        The counterpart height is linearly interpolated on the other
+        series at the picked (x, y); without coverage there (outside
+        its hull) no line is drawn. Exactly one connector exists at a
+        time — each new pick moves it. Never raises.
+        """
+        removed = self._clear_connector()
+        drawn = False
+        try:
+            series = 'pp' if label == 'PP' else 'tg'
+            all_points = self._last_3d.get('points', {}) or {}
+            pts = all_points.get(series) or []
+            other = all_points.get('tg' if series == 'pp' else 'pp') or []
+            if not (0 <= ind < len(pts)) or not other:
+                return
+            x, y, z = pts[ind][0], pts[ind][1], pts[ind][2]
+            z_other = interp_surface_z(
+                [p[0] for p in other], [p[1] for p in other],
+                [p[2] for p in other], x, y)
+            if z_other is None:
+                return
+            ax = self._current_3d_ax
+            lines = ax.plot([x, x], [y, y], [z, z_other],
+                            color='#cccccc', linestyle='--', linewidth=1.5)
+            self._connector_line = lines[0] if lines else None
+            drawn = self._connector_line is not None
+        except Exception as exc:
+            print(f"[Presenter] Connector warning: {exc}")
+        finally:
+            if removed or drawn:
+                self._win.plot_view.redraw_idle()
+
+    def _clear_connector(self) -> bool:
+        """Remove the current connector line; True when one existed."""
+        line, self._connector_line = self._connector_line, None
+        if line is None:
+            return False
+        try:
+            line.remove()
+        except Exception:
+            pass
+        return True

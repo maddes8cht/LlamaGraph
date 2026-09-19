@@ -529,11 +529,11 @@ def test_toggle_metric(tmp_path):
     assert presenter._show_ts is True
     presenter.toggle_metric()
     assert presenter._show_ts is False
-    assert window.last_metric_text == "Switch: t/s"
+    assert window.last_metric_text == "time → t/s"
 
     presenter.toggle_metric()
     assert presenter._show_ts is True
-    assert window.last_metric_text == "Switch: ns"
+    assert window.last_metric_text == "t/s → time"
 
 
 def test_on_file_select(tmp_path):
@@ -1352,6 +1352,32 @@ def _create_grid_csv(path: Path) -> Path:
     return path
 
 
+def test_2d_render_receives_metric_flag(tmp_path):
+    """2D render learns the active metric for axis labeling."""
+    csv1 = _create_grid_csv(tmp_path / "bench.csv")
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path, show_md=False)
+    presenter._available_csvs = [csv1]
+    presenter._visible_csvs = [csv1]
+    presenter._on_file_select([0])
+
+    window._mode_3d = 0
+    window._axis_x = "n_batch"
+
+    with patch('presenter.plotter_presenter.render_2d',
+               return_value=MagicMock()) as mock_render:
+        with patch.object(window.plot_view, 'render'):
+            presenter._render_plot()
+            _, kwargs = mock_render.call_args
+            assert kwargs.get('show_ts') is True
+
+            presenter.toggle_metric()
+            presenter._render_plot()
+            _, kwargs = mock_render.call_args
+            assert kwargs.get('show_ts') is False
+
+
 def test_2d_render_receives_measured_x_ticks(tmp_path):
     """2D render gets ticks at the actually measured X values."""
     csv1 = _create_grid_csv(tmp_path / "bench.csv")
@@ -1415,3 +1441,589 @@ def test_3d_render_receives_measured_xy_ticks(tmp_path):
             _, kwargs = mock_render.call_args
             assert kwargs.get('x_ticks') == [(512.0, "512"), (1024.0, "1024")]
             assert kwargs.get('y_ticks') == [(32.0, "32"), (64.0, "64")]
+
+
+def _mock_pick_event(label: str = "PP: bench", ind: int = 0):
+    """Pick event with a plain (record-free) mock artist."""
+    event = MagicMock()
+    event.ind = [ind]
+    event.artist.get_label.return_value = label
+    event.artist.get_xdata.return_value = [512.0, 1024.0]
+    event.artist.get_ydata.return_value = [100.5, 120.1]
+    return event
+
+
+def test_on_pick_rich_tooltip_from_records(tmp_path):
+    """2D tooltip shows axis name plus t/s and ns with errors."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {'series': {'pp': [], 'tg': []}, 'x_param': 'n_batch'}
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        mock_tl.assert_called_once()
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "N Batch:" in text and "512" in text
+        assert "t/s:" in text and "100.5" in text
+        # Uncertainty-rounded and unit-scaled: 50250 ns → 50.2 µs
+        assert "ns:" not in text
+        assert "time:" in text and "50.2" in text and "µs" in text
+
+
+def test_tooltip_uncertainty_rounding(tmp_path):
+    """Value precision follows the error (2 significant digits)."""
+    from presenter.plotter_presenter import PlotterPresenter as P
+    assert P._fmt_uncertain(19958354133, 394189066,
+                            grouping=True) == ("19,960,000,000", "390,000,000")
+    assert P._fmt_uncertain(25.660059, 0.504432) == ("25.66", "0.50")
+    assert P._fmt_uncertain(None, 1.0) == ("n/a", None)
+    assert P._fmt_uncertain(50.0, 0) == ("50", None)
+
+
+def test_tooltip_ns_unit_scaling(tmp_path):
+    """Latency auto-scales ns → µs → ms → s by magnitude."""
+    from presenter.plotter_presenter import PlotterPresenter as P
+    assert P._ns_parts({'ns': 19958354133, 'ns_err': 394189066}) == \
+        ("19.96", "0.39 s")
+    assert P._ns_parts({'ns': 50250.0, 'ns_err': 2600.0}) == \
+        ("50.2", "2.6 µs")
+    assert P._ns_parts({'ns': 850.0, 'ns_err': 30.0}) == ("850", "30 ns")
+    assert P._ns_parts({'ns': None, 'ns_err': 1.0}) == ("n/a", None)
+
+
+def test_tooltip_table_aligns_columns(tmp_path):
+    """Names left, values right, ± signs exactly below each other."""
+    from presenter.plotter_presenter import PlotterPresenter
+    blocks = [
+        {'header': 'PP: bench', 'rows': [
+            ('N Batch:', '512', None),
+            ('t/s:', '100.5', '5.2'),
+            ('ns:', '50,250', '2,600'),
+        ], 'tag': None},
+        {'header': 'TG: bench', 'rows': [
+            ('N Batch:', '512', None),
+            ('t/s:', '85.3', '4.1'),
+            ('ns:', '42,650', '2,050'),
+        ], 'tag': None},
+    ]
+    text = PlotterPresenter._tooltip_table(blocks)
+    rows = [l for l in text.splitlines()
+            if '±' in l or l.startswith(('N Batch:', 't/s:', 'ns:'))]
+    # Shared value column (right-aligned): value ends share one index
+    ends = set()
+    for token in ("512", "100.5", "50,250", "85.3", "42,650"):
+        for line in rows:
+            at = line.find(token)
+            if at >= 0:
+                ends.add(at + len(token))
+    assert len(ends) == 1
+    # ± signs aligned across all error rows
+    plus = {l.index('±') for l in rows if '±' in l}
+    assert len(plus) == 1
+
+
+def test_on_pick_positions_at_pointer(tmp_path):
+    """Tooltip anchors at the pointer position, not canvas coords."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {'series': {'pp': [], 'tg': []}, 'x_param': 'n_batch'}
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label'):
+        presenter._on_pick(event)
+        tip = mock_tl.return_value
+        tip.winfo_pointerx.assert_called()
+        tip.winfo_pointery.assert_called()
+        tip.geometry.assert_called_once()
+
+
+def test_on_pick_3d_shows_both_axes_and_metrics(tmp_path):
+    """3D tooltip shows both axis names/values plus t/s and ns."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_3d = {
+        'x_param': 'n_batch',
+        'y_param': 'n_ubatch',
+        'infos': {'pp': [{'x': 512.0, 'y': 64.0, 'ts': 100.5,
+                          'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0}],
+                  'tg': []},
+    }
+
+    event = MagicMock()
+    event.ind = [0]
+    event.artist.get_label.return_value = "PP"
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick_3d(event)
+        mock_tl.assert_called_once()
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "N Batch:" in text and "512" in text
+        assert "N Ubatch:" in text and "64" in text
+        assert "t/s:" in text and "time:" in text
+
+
+def test_on_pick_3d_ignores_unknown_artist(tmp_path):
+    """Non-PP/TG artists (e.g. level plane) produce no tooltip."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+
+    event = MagicMock()
+    event.ind = [0]
+    event.artist.get_label.return_value = "Level"
+
+    with patch('tkinter.Toplevel') as mock_tl:
+        presenter._on_pick_3d(event)
+        mock_tl.assert_not_called()
+
+
+def test_on_pick_3d_ignores_empty_ind(tmp_path):
+    """Empty pick index produces no tooltip."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_3d = {'x_param': 'n_batch', 'y_param': 'n_ubatch',
+                          'infos': {'pp': [], 'tg': []}}
+
+    event = MagicMock()
+    event.ind = []
+
+    with patch('tkinter.Toplevel') as mock_tl:
+        presenter._on_pick_3d(event)
+        mock_tl.assert_not_called()
+
+
+def test_tooltip_appearance_and_ttl(tmp_path):
+    """Tooltip is translucent with a gray border and hides after 6 s."""
+    from presenter.plotter_presenter import (
+        TOOLTIP_ALPHA, TOOLTIP_BORDER, TOOLTIP_TTL_MS,
+    )
+    assert TOOLTIP_ALPHA == 0.85
+    assert TOOLTIP_TTL_MS == 6000
+
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {'series': {'pp': [], 'tg': []}, 'x_param': 'n_batch'}
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label'):
+        presenter._on_pick(event)
+        tip = mock_tl.return_value
+        tip.attributes.assert_called_once_with('-alpha', 0.85)
+        tip.after.assert_called_once()
+        delay, callback = tip.after.call_args.args
+        assert delay == 6000
+        assert callable(callback)
+        _, kwargs = tip.configure.call_args
+        assert kwargs.get('highlightbackground') == TOOLTIP_BORDER
+
+
+def test_second_pick_replaces_first_tooltip(tmp_path):
+    """A new pick destroys the previous tooltip (no stacking)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {'series': {'pp': [], 'tg': []}, 'x_param': 'n_batch'}
+
+    event = _mock_pick_event()
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel') as mock_tl, \
+         patch('tkinter.Label'):
+        presenter._on_pick(event)
+        first_tip = mock_tl.return_value
+        presenter._on_pick(event)
+        first_tip.destroy.assert_called_once()
+        assert presenter._active_tip is mock_tl.return_value
+
+
+def test_hide_tooltip_survives_dead_widget(tmp_path):
+    """Deferred hide never raises, even on a destroyed widget."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    dead = MagicMock()
+    dead.destroy.side_effect = Exception("dead")
+    presenter._hide_tooltip(dead)  # must not raise
+
+
+def test_on_pick_ignores_default_legend_label(tmp_path):
+    """Stray whisker picks show values with axis title, no _no_legend_."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {'series': {'pp': [], 'tg': []}, 'x_param': 'n_batch'}
+
+    event = _mock_pick_event(label="_no_legend_")
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "_no_legend_" not in text
+        assert "N Batch:" in text
+
+
+def test_on_pick_uses_record_label(tmp_path):
+    """Record label wins: data lines stay at default _no_legend_."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {'series': {'pp': [], 'tg': []}, 'x_param': 'n_batch'}
+
+    event = _mock_pick_event(label="_no_legend_")
+    event.artist._llama_records = [
+        {'x': 512.0, 'label': 'PP: bench',
+         'ts': 100.5, 'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "_no_legend_" not in text
+        assert text.splitlines()[0] == "PP: bench"
+
+
+def test_on_pick_record_without_label_shows_values_only(tmp_path):
+    """Label-less records never leak the artist default label."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {'series': {'pp': [], 'tg': []}, 'x_param': 'n_batch'}
+
+    event = _mock_pick_event(label="_no_legend_")
+    event.artist._llama_records = [
+        {'x': 512.0, 'ts': 100.5, 'ts_err': 5.2,
+         'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert "_no_legend_" not in text
+        assert text.splitlines()[0].startswith("N Batch:")
+        assert "512" in text.splitlines()[0]
+
+
+def _mock_3d_pick(label="PP", ind=0, info=None):
+    """3D pick event on a scatter artist carrying tooltip records."""
+    if info is None:
+        info = {'x': 512.0, 'y': 64.0, 'ts': 100.5, 'ts_err': 5.2,
+                'ns': 50250.0, 'ns_err': 2600.0}
+    event = MagicMock()
+    event.ind = [ind]
+    event.artist.get_label.return_value = label
+    event.artist._llama_records = [info]
+    return event
+
+
+def _presenter_with_3d_points(tmp_path):
+    """Presenter with two overlapping series for connector tests."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_3d = {
+        'x_param': 'n_batch',
+        'y_param': 'n_ubatch',
+        'points': {
+            'pp': [(512.0, 64.0, 0.9, 0.05)],
+            'tg': [(512.0, 64.0, 0.5, 0.02),
+                   (1024.0, 64.0, 0.6, 0.02),
+                   (512.0, 128.0, 0.7, 0.02),
+                   (1024.0, 128.0, 0.8, 0.02)],
+        },
+        'infos': {'pp': [{'x': 512.0, 'y': 64.0, 'ts': 100.5,
+                          'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0}],
+                  'tg': []},
+    }
+    presenter._current_3d_ax = MagicMock()
+    return presenter
+
+
+def test_pick_3d_draws_connector_to_other_surface(tmp_path):
+    """Picking a PP point draws a vertical line to the TG surface."""
+    presenter = _presenter_with_3d_points(tmp_path)
+
+    with patch('tkinter.Toplevel'), patch('tkinter.Label'):
+        presenter._on_pick_3d(_mock_3d_pick())
+
+    ax = presenter._current_3d_ax
+    ax.plot.assert_called_once()
+    args, kwargs = ax.plot.call_args
+    assert args[0] == [512.0, 512.0]
+    assert args[1] == [64.0, 64.0]
+    assert args[2][0] == pytest.approx(0.9)
+    assert args[2][1] == pytest.approx(0.5)
+    assert kwargs.get('linestyle') == '--'
+    assert presenter._connector_line is ax.plot.return_value[0]
+
+
+def test_pick_3d_moves_connector_and_removes_old(tmp_path):
+    """A second pick replaces the connector line."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    old_line = MagicMock()
+    presenter._connector_line = old_line
+
+    with patch('tkinter.Toplevel'), patch('tkinter.Label'):
+        presenter._on_pick_3d(_mock_3d_pick())
+
+    old_line.remove.assert_called_once()
+    assert presenter._connector_line is presenter._current_3d_ax.plot.return_value[0]
+
+
+def test_pick_3d_no_connector_without_coverage(tmp_path):
+    """Picked point outside the other hull → tooltip only, no line."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    presenter._last_3d['points']['pp'] = [(9999.0, 9999.0, 0.9, 0.05)]
+
+    with patch('tkinter.Toplevel'), patch('tkinter.Label'):
+        presenter._on_pick_3d(_mock_3d_pick())
+
+    presenter._current_3d_ax.plot.assert_not_called()
+    assert presenter._connector_line is None
+
+
+def test_empty_click_dismisses_connector(tmp_path):
+    """Clicking empty space removes the connector line and repaints."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    old_line = MagicMock()
+    presenter._connector_line = old_line
+
+    presenter._on_pick_3d(None)
+
+    old_line.remove.assert_called_once()
+    assert presenter._connector_line is None
+    assert presenter._win.plot_view.redraw_count == 1
+
+
+def test_empty_click_without_line_skips_repaint(tmp_path):
+    """No connector present → no removal, no repaint."""
+    presenter = _presenter_with_3d_points(tmp_path)
+    assert presenter._connector_line is None
+
+    presenter._on_pick_3d(None)
+
+    assert presenter._win.plot_view.redraw_count == 0
+
+
+def test_empty_click_2d_is_ignored(tmp_path):
+    """Empty clicks do nothing in 2-D (no transient overlay there)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+
+    with patch('tkinter.Toplevel') as mock_tl:
+        presenter._on_pick(None)
+        mock_tl.assert_not_called()
+
+
+def _combined_2d_setup(tmp_path):
+    """Presenter with PP+TG records sharing file 0 and x=512."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    tg_point = {'x': 512.0, 'file_idx': 0, 'ts': 85.3, 'ts_err': 4.1,
+                'ns': 42650.0, 'ns_err': 2050.0}
+    presenter._last_2d = {
+        'x_param': 'n_batch',
+        'series': {
+            'pp': [{'x': 512.0, 'file_idx': 0, 'ts': 100.5,
+                    'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0}],
+            'tg': [tg_point],
+        },
+    }
+    return presenter, window
+
+
+def test_2d_combined_tooltip_shows_both_series(tmp_path):
+    """Same file, same x → PP block, separator, TG block."""
+    from presenter.plotter_presenter import TOOLTIP_SEPARATOR
+    presenter, _ = _combined_2d_setup(tmp_path)
+
+    event = _mock_pick_event(label="PP: bench")
+    event.artist._llama_records = [
+        {'x': 512.0, 'series': 'pp', 'file_idx': 0, 'label': 'PP: bench',
+         'ts': 100.5, 'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert TOOLTIP_SEPARATOR in text
+        pp_pos = text.find("PP: bench")
+        tg_pos = text.find("TG:")
+        assert 0 <= pp_pos < tg_pos
+        assert text.count("t/s:") == 2
+
+
+def test_2d_combined_unified_mode(tmp_path):
+    """Unified lines combine across the averaged records."""
+    from presenter.plotter_presenter import TOOLTIP_SEPARATOR
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {
+        'x_param': 'n_batch',
+        'series': {
+            'pp': [{'x': 512.0, 'y': 100.0, 'err': 5.0, 'ts': 100.0,
+                    'ts_err': 5.0, 'ns': 50000.0, 'ns_err': 2500.0}],
+            'tg': [{'x': 512.0, 'y': 80.0, 'err': 4.0, 'ts': 80.0,
+                    'ts_err': 4.0, 'ns': 42000.0, 'ns_err': 2000.0}],
+        },
+    }
+
+    event = _mock_pick_event(label="Unified PP")
+    event.artist._llama_records = [
+        {'x': 512.0, 'series': 'pp', 'label': 'Unified PP',
+         'ts': 100.0, 'ts_err': 5.0, 'ns': 50000.0, 'ns_err': 2500.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert TOOLTIP_SEPARATOR in text
+        assert "Unified PP" in text and "Unified TG" in text
+
+
+def test_2d_unified_counterpart_averages_files(tmp_path):
+    """Unified counterpart shows the cross-file average, not file 0."""
+    import math
+    from presenter.plotter_presenter import TOOLTIP_SEPARATOR
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {
+        'x_param': 'n_batch',
+        'series': {
+            'pp': [{'x': 512.0, 'file_idx': 0, 'ts': 100.0,
+                    'ts_err': 5.0, 'ns': 50000.0, 'ns_err': 2500.0}],
+            'tg': [{'x': 512.0, 'file_idx': 0, 'y': 80.0, 'err': 4.0,
+                    'ts': 80.0, 'ts_err': 4.0,
+                    'ns': 40000.0, 'ns_err': 2000.0},
+                   {'x': 512.0, 'file_idx': 1, 'y': 100.0, 'err': 6.0,
+                    'ts': 100.0, 'ts_err': 6.0,
+                    'ns': 60000.0, 'ns_err': 3000.0}],
+        },
+    }
+
+    event = _mock_pick_event(label="Unified PP")
+    event.artist._llama_records = [
+        {'x': 512.0, 'series': 'pp', 'label': 'Unified PP',
+         'ts': 100.0, 'ts_err': 5.0, 'ns': 50000.0, 'ns_err': 2500.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert TOOLTIP_SEPARATOR in text
+        # Mean of 80/100, not file 0's 80.0; RMS errors, not max
+        assert "90" in text
+        assert "3.6" in text  # sqrt(4²+6²)/2, not max(4, 6) = 6
+        assert "Unified TG" in text
+
+
+def test_2d_unified_counterpart_hidden_without_visible_files(tmp_path):
+    """Unified counterpart with all files toggled off → single block."""
+    from presenter.plotter_presenter import TOOLTIP_SEPARATOR
+    window = MockMainWindow()
+    window.left_sidebar._tg_flags = {0: False, 1: False}
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._last_2d = {
+        'x_param': 'n_batch',
+        'series': {
+            'pp': [{'x': 512.0, 'ts': 100.0, 'ts_err': 5.0,
+                    'ns': 50000.0, 'ns_err': 2500.0}],
+            'tg': [{'x': 512.0, 'file_idx': 0, 'y': 80.0, 'err': 4.0,
+                    'ts': 80.0, 'ts_err': 4.0,
+                    'ns': 40000.0, 'ns_err': 2000.0},
+                   {'x': 512.0, 'file_idx': 1, 'y': 100.0, 'err': 6.0,
+                    'ts': 100.0, 'ts_err': 6.0,
+                    'ns': 60000.0, 'ns_err': 3000.0}],
+        },
+    }
+
+    event = _mock_pick_event(label="Unified PP")
+    event.artist._llama_records = [
+        {'x': 512.0, 'series': 'pp', 'label': 'Unified PP',
+         'ts': 100.0, 'ts_err': 5.0, 'ns': 50000.0, 'ns_err': 2500.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert TOOLTIP_SEPARATOR not in text
+        assert "Unified TG" not in text
+
+
+def test_2d_single_block_without_match(tmp_path):
+    """No TG point at this x → single PP block, no separator."""
+    from presenter.plotter_presenter import TOOLTIP_SEPARATOR
+    presenter, _ = _combined_2d_setup(tmp_path)
+    presenter._last_2d['series']['tg'][0]['x'] = 1024.0
+
+    event = _mock_pick_event(label="PP: bench")
+    event.artist._llama_records = [
+        {'x': 512.0, 'series': 'pp', 'file_idx': 0, 'label': 'PP: bench',
+         'ts': 100.5, 'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert TOOLTIP_SEPARATOR not in text
+        assert "TG:" not in text
+
+
+def test_2d_single_block_when_counterpart_hidden(tmp_path):
+    """Hidden TG series → single PP block."""
+    from presenter.plotter_presenter import TOOLTIP_SEPARATOR
+    presenter, window = _combined_2d_setup(tmp_path)
+    window._show_tg = 0
+
+    event = _mock_pick_event(label="PP: bench")
+    event.artist._llama_records = [
+        {'x': 512.0, 'series': 'pp', 'file_idx': 0, 'label': 'PP: bench',
+         'ts': 100.5, 'ts_err': 5.2, 'ns': 50250.0, 'ns_err': 2600.0},
+    ]
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert TOOLTIP_SEPARATOR not in text
+
+
+def test_3d_combined_tg_click_orders_pp_first(tmp_path):
+    """TG click with PP match → PP block on top, TG below."""
+    from presenter.plotter_presenter import TOOLTIP_SEPARATOR
+    presenter = _presenter_with_3d_points(tmp_path)
+    tg_info = {'x': 512.0, 'y': 64.0, 'ts': 2.0, 'ts_err': 0.1,
+               'ns': 1.0, 'ns_err': 0.05}
+
+    event = _mock_3d_pick(label="TG", info=tg_info)
+
+    with patch('tkinter.Toplevel'), \
+         patch('tkinter.Label') as mock_lbl:
+        presenter._on_pick_3d(event)
+        text = mock_lbl.call_args.kwargs.get('text', '')
+        assert TOOLTIP_SEPARATOR in text
+        assert text.startswith("PP\n")
+        assert "\nTG\n" in text

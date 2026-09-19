@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
 import tkinter as tk
@@ -74,6 +75,8 @@ class PlotView(tk.Frame):
         self._canvas: Optional[FigureCanvasTkAgg] = None
         self._toolbar: Optional[CustomNavigationToolbar] = None
         self._home_cb: Optional[Callable] = None
+        self._pick_cb: Optional[Callable] = None
+        self._press_xy: Optional[tuple] = None
 
         self._placeholder = tk.Label(
             self,
@@ -111,7 +114,15 @@ class PlotView(tk.Frame):
         ax3d:
             The 3-D Axes3D instance (if a 3-D plot), else None.
         on_pick_cb:
-            Optional callback for 2-D pick events.
+            Optional callback for data-point clicks (2-D lines and
+            3-D scatter). Clicks dispatch manually so every tagged
+            artist is considered figure-wide (Matplotlib's built-in
+            pick dispatch skips artists whose axes is not the topmost
+            one — with twin axes the PP series would never fire) and
+            the nearest hit wins instead of the last event. A click
+            counts as press+release without dragging, so rotation
+            drags never pick or dismiss; clicks with no hit notify
+            with None (overlay dismissal).
         """
         self._destroy_canvas()
         self._placeholder.pack_forget()
@@ -127,8 +138,100 @@ class PlotView(tk.Frame):
         self._toolbar.pack(side=tk.TOP, fill=tk.X)
         self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        if on_pick_cb and ax3d is None:
-            self._canvas.mpl_connect('pick_event', on_pick_cb)
+        self._pick_cb = on_pick_cb
+        if on_pick_cb:
+            self._canvas.mpl_connect('button_press_event', self._on_press)
+            self._canvas.mpl_connect('button_release_event', self._on_release)
+
+    def _on_press(self, mouseevent) -> None:
+        """Remember press position for click-vs-drag detection."""
+        try:
+            if getattr(mouseevent, 'button', 1) == 1:
+                self._press_xy = (mouseevent.x, mouseevent.y)
+            else:
+                self._press_xy = None
+        except Exception:
+            self._press_xy = None
+
+    def _on_release(self, mouseevent) -> None:
+        """Dispatch only press+release pairs without dragging."""
+        try:
+            start = getattr(self, '_press_xy', None)
+            self._press_xy = None
+            if start is None or getattr(mouseevent, 'button', 1) != 1:
+                return
+            moved = math.hypot(mouseevent.x - start[0],
+                               mouseevent.y - start[1])
+            if moved > CLICK_DRAG_TOL_PX:
+                return  # rotation/pan drag — no pick, no dismiss
+        except Exception:
+            return
+        self._dispatch_pick(mouseevent)
+
+    def _dispatch_pick(self, mouseevent) -> None:
+        """
+        Figure-wide nearest-hit click dispatch for data tooltips.
+
+        Tests every line/collection carrying `_llama_records` with its
+        own picker and calls the pick callback once for the closest
+        hit — or with None when the click landed outside the data
+        rectangles, so the presenter can dismiss transient overlays
+        (connector line). Clicks on plot data never dismiss, keeping
+        rotation drags harmless. Ignores non-left clicks and clicks
+        while a toolbar tool (pan/zoom) is active. Never raises.
+        """
+        cb = self._pick_cb
+        if cb is None:
+            return
+        try:
+            if getattr(mouseevent, 'button', 1) != 1:
+                return
+            if getattr(self._toolbar, 'mode', ''):
+                return
+            fig = getattr(getattr(mouseevent, 'canvas', None), 'figure', None)
+            axes = getattr(fig, 'axes', [])
+        except Exception:
+            return
+        best = None  # (distance, artist, index)
+        for ax in axes:
+            artists = list(getattr(ax, 'lines', [])) + \
+                list(getattr(ax, 'collections', []))
+            for artist in artists:
+                records = getattr(artist, '_llama_records', None)
+                if not isinstance(records, list) or not records:
+                    continue
+                try:
+                    picker = artist.get_picker()
+                    if callable(picker):
+                        hit, prop = picker(artist, mouseevent)
+                    else:
+                        hit, prop = artist.contains(mouseevent)
+                    if not hit:
+                        continue
+                    inds = [i for i in list(prop.get('ind', []))
+                            if 0 <= i < len(records)]
+                    if not inds:
+                        continue
+                    dist, idx = _nearest_hit_index(artist, inds, mouseevent)
+                except Exception:
+                    continue
+                if best is None or dist < best[0]:
+                    best = (dist, artist, idx)
+        if best is None:
+            # Click without a data hit (empty plot area, decorations,
+            # legend, title, figure background): dismiss overlays.
+            # Rotation drags never reach dispatch (click-vs-drag gate
+            # in _on_release), so keeping the connector is safe.
+            try:
+                cb(None)
+            except Exception:
+                pass
+            return
+        _, artist, idx = best
+        try:
+            cb(SimpleNamespace(ind=[idx], artist=artist))
+        except Exception:
+            pass
 
     def redraw_idle(self) -> None:
         if self._canvas:
@@ -162,6 +265,7 @@ def render_2d(
     dark_mode: bool = True,
     normalize: bool = False,
     z_label_mode: str = "%",
+    show_ts: bool = True,
     x_ticks: Optional[list[tuple]] = None,
 ) -> Figure:
     """
@@ -188,7 +292,7 @@ def render_2d(
         ax.set_xticklabels([l for _, l in x_ticks])
 
     scale_pct = (z_label_mode == "%")
-    show_ts_label = "Tokens/s"
+    show_ts_label = "Tokens/s" if show_ts else "Time (ns)"
     y_label_pp = f"PP Performance (%)" if (normalize and scale_pct) else f"PP {show_ts_label}"
     ax.set_ylabel(y_label_pp, color=pp_base, fontweight='bold')
 
@@ -208,9 +312,9 @@ def render_2d(
         pp_pts = [p for p in series_data['pp'] if show_pp_flags[p['file_idx']]]
         tg_pts = [p for p in series_data['tg'] if show_tg_flags[p['file_idx']]]
 
-        _draw_unified(ax, pp_pts, pp_base, "Unified PP", '-', handles)
+        _draw_unified(ax, pp_pts, pp_base, "Unified PP", '-', handles, "pp")
         if ax_tg:
-            _draw_unified(ax_tg, tg_pts, tg_base, "Unified TG", '--', handles)
+            _draw_unified(ax_tg, tg_pts, tg_base, "Unified TG", '--', handles, "tg")
     else:
         # --- Per-file mode ---
         n_files = len(datasets_raw)
@@ -238,6 +342,7 @@ def render_2d(
                     markersize=6, picker=5,
                 )
                 handles.append(ln)
+                _attach_records(ln, pp_pts, f"PP: {fname}", "pp")
 
             if ax_tg and show_tg_flags[i] and tg_pts:
                 ln = ax_tg.errorbar(
@@ -248,6 +353,7 @@ def render_2d(
                     markersize=6, picker=5,
                 )
                 handles.append(ln)
+                _attach_records(ln, tg_pts, f"TG: {fname}", "tg")
 
     if handles:
         ax.legend(
@@ -275,27 +381,187 @@ def render_2d(
     return fig
 
 
-def _draw_unified(ax, pts, color, label, linestyle, handles):
-    """Helper: collect all per-file points, average by x, draw one line."""
-    if not pts:
+def _point_record(p: dict, label: Optional[str] = None,
+                  series: Optional[str] = None) -> dict:
+    """
+    Tooltip payload for one 2-D series point (drawn order).
+
+    The series label rides along because errorbar() keeps it on the
+    container (for the legend) while the pickable data line itself
+    stays at the default "_no_legend_". 'series' ('pp'/'tg') and
+    'file_idx' allow the presenter to find the counterpart point of
+    the other series for combined tooltips.
+    """
+    rec = {
+        'x': p.get('x'),
+        'ts': p.get('ts'),
+        'ts_err': p.get('ts_err', 0.0),
+        'ns': p.get('ns'),
+        'ns_err': p.get('ns_err', 0.0),
+    }
+    if label is None:
+        label = p.get('label')
+    if label is not None:
+        rec['label'] = label
+    if series is None:
+        series = p.get('series')
+    if series is not None:
+        rec['series'] = series
+    if p.get('file_idx') is not None:
+        rec['file_idx'] = p.get('file_idx')
+    return rec
+
+
+# Click-vs-drag tolerance: press+release pairs moving less than this
+# (screen pixels) count as clicks; anything beyond is a rotation drag.
+CLICK_DRAG_TOL_PX = 5.0
+
+
+def _nearest_hit_index(artist, inds: list, mouseevent) -> tuple:
+    """
+    Closest hit index (and its screen distance) among candidate indices.
+
+    Only Line2D artists support exact measurement via their transform;
+    anything else keeps candidate order with distance 0 (correct
+    whenever a single artist type is involved). Empty input yields
+    (inf, -1) so it never wins a comparison.
+    """
+    inds = list(inds or [])
+    if not inds:
+        return float('inf'), -1
+    try:
+        if isinstance(artist, mlines.Line2D):
+            xy = np.asarray(artist.get_xydata(), dtype=float)[inds]
+            pts = artist.get_transform().transform(xy)
+            dist = np.hypot(pts[:, 0] - mouseevent.x,
+                            pts[:, 1] - mouseevent.y)
+            best = int(np.argmin(dist))
+            return float(dist[best]), int(inds[best])
+    except Exception:
+        pass
+    return 0.0, int(inds[0])
+
+
+def _marker_only_picker(artist, mouseevent, tol=8.0):
+    """
+    Pick callback accepting hits near actual markers only.
+
+    The default Line2D picking also fires on connecting segments far
+    from any measurement, which lets one series steal clicks meant for
+    the other (with last-event-wins the steal is systematic). Returns
+    (hit, {'ind': ...}) like contains().
+    """
+    try:
+        data = artist.get_xydata()
+        if data is None or len(data) == 0:
+            return False, {}
+        pts = artist.get_transform().transform(np.asarray(data, dtype=float))
+        dist = np.hypot(pts[:, 0] - mouseevent.x, pts[:, 1] - mouseevent.y)
+        hits = np.nonzero(dist <= tol)[0]
+        if len(hits) == 0:
+            return False, {}
+        return True, {'ind': hits}
+    except Exception:
+        return False, {}
+
+
+def _disable_pick_recursive(artist) -> None:
+    """Turn picking off for an artist and any nested children."""
+    if isinstance(artist, (list, tuple)):
+        for child in artist:
+            _disable_pick_recursive(child)
         return
+    try:
+        artist.set_picker(False)
+    except (AttributeError, TypeError):
+        pass
+
+
+def _attach_records(container, pts: list[dict], label: Optional[str] = None,
+                    series: Optional[str] = None) -> None:
+    """
+    Stash per-point tooltip records on the drawn data line, in drawn
+    order, so the pick handler can show values without reverse lookup.
+    Picking is restricted to markers so clicks near connecting segments
+    cannot steal tooltips from the other series. Best effort — never
+    raises.
+    """
+    try:
+        data_line = container[0]
+    except (IndexError, TypeError, AttributeError):
+        return
+    try:
+        data_line._llama_records = [_point_record(p, label, series) for p in pts]
+    except (AttributeError, TypeError):
+        pass
+    try:
+        data_line.set_picker(_marker_only_picker)
+    except (AttributeError, TypeError):
+        pass
+    try:
+        for child in container.get_children():
+            if child is not data_line:
+                _disable_pick_recursive(child)
+    except (AttributeError, TypeError):
+        pass
+
+
+def average_bucket(xv, members: list[dict]) -> tuple:
+    """
+    Average one x-bucket into drawn values plus a tooltip record.
+
+    Returns (y, err, record) where err uses RMS combination (same as
+    the drawn error bar) and the record carries averaged ts/ns with
+    RMS-combined errors, so the tooltip explains the bar. Shared with
+    the presenter, which averages unified counterparts the same way.
+    """
+    means = [v['y'] for v in members]
+    errs = [v['err'] for v in members]
+    rec: dict = {'x': xv}
+    for key in ('ts', 'ts_err', 'ns', 'ns_err'):
+        vals = [v[key] for v in members if v.get(key) is not None]
+        if key.endswith('_err'):
+            rec[key] = (math.sqrt(sum(e ** 2 for e in vals)) / len(vals)
+                        if vals else 0.0)
+        else:
+            rec[key] = sum(vals) / len(vals) if vals else None
+    y = sum(means) / len(means)
+    err = math.sqrt(sum(e ** 2 for e in errs)) / len(errs)
+    return y, err, rec
+
+
+def _draw_unified(ax, pts, color, label, linestyle, handles, series=None):
+    """
+    Helper: collect all per-file points, average by x, draw one line.
+    Returns tooltip records in drawn order (averaged ts/ns included).
+    *series* ('pp'/'tg') is stored in the records; derived from the
+    label when omitted (production callers pass it explicitly).
+    """
+    if not pts:
+        return []
+    if series is None:
+        series = 'pp' if 'PP' in (label or '') else 'tg'
     from collections import defaultdict
     buckets: dict = defaultdict(list)
     for p in pts:
-        buckets[p['x']].append((p['y'], p['err']))
-    xs, ys, es = [], [], []
-    for xv, vals in sorted(buckets.items()):
-        means = [v[0] for v in vals]
-        errs = [v[1] for v in vals]
+        buckets[p['x']].append(p)
+    xs, ys, es, records = [], [], [], []
+    for xv, members in sorted(buckets.items()):
+        y, err, rec = average_bucket(xv, members)
         xs.append(xv)
-        ys.append(sum(means) / len(means))
-        es.append(math.sqrt(sum(e ** 2 for e in errs)) / len(errs))
+        ys.append(y)
+        es.append(err)
+        rec['label'] = label
+        rec['series'] = series
+        records.append(rec)
     ln = ax.errorbar(
         xs, ys, yerr=es, label=label, color=color,
         marker='D', capsize=4, linestyle=linestyle,
         linewidth=2.5, picker=5,
     )
     handles.append(ln)
+    _attach_records(ln, records, label)
+    return records
 
 
 # ── 3-D Rendering ─────────────────────────────────────────────────────────────
@@ -327,6 +593,8 @@ def render_3d(
     pp_max: Optional[float] = None,
     tg_min: Optional[float] = None,
     tg_max: Optional[float] = None,
+    infos_pp: Optional[list] = None,
+    infos_tg: Optional[list] = None,
 ) -> tuple[Figure, Any]:
     """
     Build and return a (Figure, Axes3D) pair for the 3-D surface plot.
@@ -361,6 +629,9 @@ def render_3d(
         Whether the Z values were normalized per series.
     pp_min / pp_max / tg_min / tg_max:
         Pre-normalization Z statistics used for absolute Z tick labels.
+    infos_pp / infos_tg:
+        Optional per-point tooltip payloads aligned 1:1 with the point
+        lists; attached to the scatter artists for click dispatch.
     x_ticks / y_ticks:
         Optional (position, label) pairs showing the actually measured
         values on X/Y instead of automatic decimal ticks.
@@ -391,7 +662,7 @@ def render_3d(
     edge_c = 'black' if show_wireframe else 'none'
     lw = 0.5 if show_wireframe else 0
 
-    def plot_series(pts, color, label, marker, cmap):
+    def plot_series(pts, color, label, marker, cmap, infos=None):
         if not pts:
             return
         xs, ys, zs, es = zip(*pts)
@@ -434,11 +705,15 @@ def render_3d(
                 )
                 surfaces.append((verts, colors, edge_c, lw))
 
-        # Scatter points
-        ax.scatter(
+        # Scatter points (picker enabled for 3-D tooltips; records ride
+        # along for figure-wide click dispatch)
+        sc = ax.scatter(
             xs, ys, zs, c=color, marker=marker, s=60, label=label,
             edgecolors='white', linewidth=0.8, alpha=1.0, depthshade=False,
+            picker=5,
         )
+        if infos:
+            sc._llama_records = list(infos)
 
         # Wall projections
         if show_projections:
@@ -447,8 +722,8 @@ def render_3d(
             ax.plot(ys, zs, zs=min_x_wall, zdir='x',
                     color=color, linestyle=':', marker=marker, markersize=4, alpha=0.5)
 
-    plot_series(points_pp, pp_color, "PP", 'o', cmap_pp)
-    plot_series(points_tg, tg_color, "TG", 's', cmap_tg)
+    plot_series(points_pp, pp_color, "PP", 'o', cmap_pp, infos_pp)
+    plot_series(points_tg, tg_color, "TG", 's', cmap_tg, infos_tg)
 
     # One joint surface collection so overlapping PP/TG triangles — and
     # the level plane below — are depth-sorted against each other
@@ -624,6 +899,34 @@ def _mask_gap_triangles(triangles, x, y, factor=GAP_EDGE_FACTOR):
 def _clamp_field(z_values, z_min: float, z_max: float):
     """Clamp refined z values to the measured range (anti-overshoot)."""
     return np.clip(np.asarray(z_values, dtype=float), z_min, z_max)
+
+
+def interp_surface_z(xs, ys, zs, x: float, y: float) -> Optional[float]:
+    """
+    Linearly interpolated surface height at (x, y) from scattered points.
+
+    Returns None when interpolation is impossible (fewer than 3 points,
+    degenerate geometry, non-finite result, or (x, y) outside the
+    triangulated hull — masked values). Never raises.
+    """
+    try:
+        x_arr = np.asarray(list(xs), dtype=float)
+        y_arr = np.asarray(list(ys), dtype=float)
+        z_arr = np.asarray(list(zs), dtype=float)
+        if len(x_arr) < 3:
+            return None
+        tri = mtri.Triangulation(x_arr, y_arr)
+        interp = mtri.LinearTriInterpolator(tri, z_arr)
+        z = interp(float(x), float(y))
+    except Exception:
+        return None
+    try:
+        if np.ma.is_masked(z):
+            return None
+        value = float(z)
+    except (ValueError, TypeError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _series_face_colors(triangles, x, y, z, color, cmap, style, light):
