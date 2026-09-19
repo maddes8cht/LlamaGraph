@@ -22,7 +22,7 @@ from model.benchmark_model import BenchmarkModel
 from utils.colors import DEFAULT_PP_COLOR, DEFAULT_TG_COLOR
 from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
-from view.plot_view import render_2d, render_3d
+from view.plot_view import thin_value_ticks, render_2d, render_3d
 
 
 class PlotterPresenter:
@@ -562,6 +562,12 @@ class PlotterPresenter:
             do_unify=self._win.unify,
             normalize=normalize,
             z_label_mode=self._win.z_label_mode,
+            x_ticks=thin_value_ticks(
+                [p['x'] for p in series_data['pp']
+                 if show_pp_flags[p['file_idx']]]
+                + [p['x'] for p in series_data['tg']
+                   if show_tg_flags[p['file_idx']]]
+            ),
         )
 
         self._current_3d_ax = None
@@ -613,6 +619,15 @@ class PlotterPresenter:
             scale_pct=scale_pct,
         )
 
+        # Measured value ticks, unless a dimension is string-valued
+        # (then the categorical labels below take precedence).
+        x_labels = self._model.get_dim_labels(x_param)
+        y_labels = self._model.get_dim_labels(y_param)
+        x_ticks = None if x_labels is not None else thin_value_ticks(
+            [p[0] for p in points_pp] + [p[0] for p in points_tg])
+        y_ticks = None if y_labels is not None else thin_value_ticks(
+            [p[1] for p in points_pp] + [p[1] for p in points_tg])
+
         fig, ax = render_3d(
             points_pp=points_pp,
             points_tg=points_tg,
@@ -637,17 +652,17 @@ class PlotterPresenter:
             pp_max=stats['pp_max'],
             tg_min=stats['tg_min'],
             tg_max=stats['tg_max'],
+            x_ticks=x_ticks,
+            y_ticks=y_ticks,
         )
 
         self._current_3d_ax = ax
         self._win.plot_view.render(fig, ax3d=ax)
 
         # Apply categorical tick labels if dimensions are string-valued
-        x_labels = self._model.get_dim_labels(x_param)
         if x_labels is not None:
             ax.set_xticks(range(len(x_labels)))
             ax.set_xticklabels(x_labels)
-        y_labels = self._model.get_dim_labels(y_param)
         if y_labels is not None:
             ax.set_yticks(range(len(y_labels)))
             ax.set_yticklabels(y_labels)

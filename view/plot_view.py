@@ -162,10 +162,14 @@ def render_2d(
     dark_mode: bool = True,
     normalize: bool = False,
     z_label_mode: str = "%",
+    x_ticks: Optional[list[tuple]] = None,
 ) -> Figure:
     """
     Build and return a 2-D multi-file comparison Figure.
     The function is stateless: it creates and returns a fresh Figure.
+
+    *x_ticks* is an optional list of (position, label) pairs showing
+    the actually measured values instead of automatic decimal ticks.
     """
     bg = COLORS['bg'] if dark_mode else 'white'
     fig = Figure(figsize=(10, 6), facecolor=bg)
@@ -178,6 +182,10 @@ def render_2d(
             f"Comparison | X: {x_param.replace('_', ' ').title()}{norm_suffix}"
     ax.set_title(title, color=COLORS['fg'], fontsize=13, fontweight='bold')
     ax.set_xlabel(x_param.replace('_', ' ').title(), color=COLORS['fg'])
+
+    if x_ticks:
+        ax.set_xticks([p for p, _ in x_ticks])
+        ax.set_xticklabels([l for _, l in x_ticks])
 
     scale_pct = (z_label_mode == "%")
     show_ts_label = "Tokens/s"
@@ -313,6 +321,8 @@ def render_3d(
     clamp_surface: bool = False,
     mask_gaps: bool = False,
     normalized: bool = False,
+    x_ticks: Optional[list[tuple]] = None,
+    y_ticks: Optional[list[tuple]] = None,
     pp_min: Optional[float] = None,
     pp_max: Optional[float] = None,
     tg_min: Optional[float] = None,
@@ -351,6 +361,9 @@ def render_3d(
         Whether the Z values were normalized per series.
     pp_min / pp_max / tg_min / tg_max:
         Pre-normalization Z statistics used for absolute Z tick labels.
+    x_ticks / y_ticks:
+        Optional (position, label) pairs showing the actually measured
+        values on X/Y instead of automatic decimal ticks.
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -469,6 +482,15 @@ def render_3d(
     if normalized and z_label_mode in ("pp", "tg"):
         lo, hi = (pp_min, pp_max) if z_label_mode == "pp" else (tg_min, tg_max)
         _set_series_zticks(ax, lo, hi)
+
+    # Measured value ticks (the presenter passes categorical labels
+    # instead for string-valued dimensions).
+    if x_ticks:
+        ax.set_xticks([p for p, _ in x_ticks])
+        ax.set_xticklabels([l for _, l in x_ticks])
+    if y_ticks:
+        ax.set_yticks([p for p, _ in y_ticks])
+        ax.set_yticklabels([l for _, l in y_ticks])
 
     # Legend
     handles = []
@@ -668,6 +690,40 @@ def _draw_merged_surfaces(ax, surfaces):
     )
     ax.add_collection3d(coll)
     return coll
+
+
+# At most this many value ticks are placed on an axis; denser value
+# sets are thinned evenly so labels stay readable.
+MAX_VALUE_TICKS = 12
+
+
+def thin_value_ticks(values, max_ticks=MAX_VALUE_TICKS):
+    """
+    Unique sorted axis values thinned to at most *max_ticks* entries.
+
+    Returns a list of (position, label) pairs with compact labels
+    ("%g" for numbers), thinned to at most *max_ticks* entries while
+    always keeping the maximum measured value. Returns None when the
+    values are unusable — empty, mutually unsortable mixed types, or
+    strings (string dimensions keep Matplotlib's categorical ticks;
+    numeric tick positions are required). The caller then keeps
+    automatic ticks.
+    """
+    try:
+        ordered = sorted(set(values))
+    except TypeError:
+        return None
+    if not ordered:
+        return None
+    if any(isinstance(v, str) for v in ordered):
+        return None
+    unique = ordered
+    if len(unique) > max_ticks:
+        step = (len(unique) + max_ticks - 1) // max_ticks
+        unique = unique[::step]
+        if unique[-1] != ordered[-1]:
+            unique.append(ordered[-1])
+    return [(v, f"{v:g}") for v in unique]
 
 
 # Level-plane appearance and grid density (divisions per side at

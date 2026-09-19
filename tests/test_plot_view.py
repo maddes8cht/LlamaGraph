@@ -64,7 +64,52 @@ class TestSetZLabel:
         assert ax.get_zlabel()
 
 
-# ── _set_series_zticks ─────────────────────────────────────────────────────
+# ── thin_value_ticks ────────────────────────────────────────────────────
+
+
+class TestThinValueTicks:
+    """Tests for thin_value_ticks (pure helper, no axes required)."""
+
+    def test_basic_values_formatted_compactly(self):
+        from view.plot_view import thin_value_ticks
+        assert thin_value_ticks([512.0, 1024.0, 1536.0]) == \
+            [(512.0, "512"), (1024.0, "1024"), (1536.0, "1536")]
+
+    def test_deduplicates_and_sorts(self):
+        from view.plot_view import thin_value_ticks
+        assert thin_value_ticks([256.0, 64.0, 256.0, 128.0]) == \
+            [(64.0, "64"), (128.0, "128"), (256.0, "256")]
+
+    def test_thins_dense_sets(self):
+        from view.plot_view import thin_value_ticks
+        ticks = thin_value_ticks([float(v) for v in range(30)], max_ticks=12)
+        assert ticks is not None
+        assert len(ticks) <= 12
+        assert ticks[0][0] == 0.0
+        # The maximum measured value always keeps its tick
+        assert ticks[-1] == (29.0, "29")
+
+    def test_thinning_keeps_maximum(self):
+        from view.plot_view import thin_value_ticks
+        ticks = thin_value_ticks([float(v) for v in range(13)], max_ticks=12)
+        assert ticks is not None
+        assert ticks[-1] == (12.0, "12")
+
+    def test_empty_returns_none(self):
+        from view.plot_view import thin_value_ticks
+        assert thin_value_ticks([]) is None
+
+    def test_mixed_types_return_none(self):
+        from view.plot_view import thin_value_ticks
+        assert thin_value_ticks([1.0, "auto"]) is None
+
+    def test_string_values_return_none(self):
+        """Strings keep Matplotlib categorical ticks (positions must be numeric)."""
+        from view.plot_view import thin_value_ticks
+        assert thin_value_ticks(["70B", "7B"]) is None
+
+
+# ── _set_series_zticks ────────────────────────────────────────────────────
 
 
 class TestSetSeriesZTicks:
@@ -867,6 +912,68 @@ class TestLevelPlaneSurface:
         assert verts[:, :, 0].max() == pytest.approx(4.0)
         assert verts[:, :, 1].min() == pytest.approx(10.0)
         assert verts[:, :, 1].max() == pytest.approx(20.0)
+
+
+# ── Measured value ticks in renderers ────────────────────────────────────
+
+
+class TestValueTicksRender:
+    """x_ticks/y_ticks show measured values instead of auto decimals."""
+
+    def test_render_2d_applies_x_ticks(self):
+        """render_2d labels X with the given measured values."""
+        fig = render_2d(
+            datasets_raw=[{'path': Path('/f.csv')}],
+            series_data={'pp': [{'x': 512.0, 'y': 1.0, 'err': 0.0,
+                                 'file_idx': 0}],
+                         'tg': []},
+            x_param="n_batch",
+            pp_base="#ff0000",
+            tg_base="#00ff00",
+            show_pp_flags=[True],
+            show_tg_flags=[False],
+            do_unify=False,
+            x_ticks=[(512.0, "512"), (1024.0, "1024")],
+        )
+        ax = fig.axes[0]
+        assert [t.get_text() for t in ax.get_xticklabels()] == \
+            ["512", "1024"]
+
+    def test_render_2d_without_ticks_keeps_auto(self):
+        """No x_ticks → automatic ticks (no crash, labels exist)."""
+        fig = render_2d(
+            datasets_raw=[{'path': Path('/f.csv')}],
+            series_data={'pp': [{'x': 512.0, 'y': 1.0, 'err': 0.0,
+                                 'file_idx': 0}],
+                         'tg': []},
+            x_param="n_batch",
+            pp_base="#ff0000",
+            tg_base="#00ff00",
+            show_pp_flags=[True],
+            show_tg_flags=[False],
+            do_unify=False,
+        )
+        ax = fig.axes[0]
+        assert len(ax.get_xticklabels()) > 0
+
+    def test_render_3d_applies_xy_ticks(self):
+        """render_3d labels X/Y with the given measured values."""
+        pts = [(512.0, 64.0, 100.0, 5.0),
+               (1024.0, 64.0, 110.0, 5.0),
+               (512.0, 128.0, 95.0, 5.0)]
+        fig, ax = render_3d(
+            points_pp=pts,
+            points_tg=[],
+            x_param="n_batch", y_param="n_ubatch",
+            pp_color="#ff0000", tg_color="#00ff00",
+            show_surface=False,
+            x_ticks=[(512.0, "512"), (1024.0, "1024")],
+            y_ticks=[(64.0, "64"), (128.0, "128")],
+        )
+        assert [t.get_text() for t in ax.get_xticklabels()] == \
+            ["512", "1024"]
+        assert [t.get_text() for t in ax.get_yticklabels()] == \
+            ["64", "128"]
 
 
 # ── CustomNavigationToolbar ────────────────────────────────────────────
