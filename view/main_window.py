@@ -28,6 +28,11 @@ from view.left_sidebar import LeftSidebar
 from view.right_sidebar import RightSidebar
 from view.plot_view import PlotView
 
+#: Base OS window title; the current graph title is appended by
+#: set_graph_title() (the figures themselves carry no title so the
+#: freed margins belong to the plot).
+WINDOW_TITLE_BASE = "llamagraph — llama-bench Visualizer"
+
 
 class MainWindow:
     """
@@ -81,7 +86,7 @@ class MainWindow:
     # ── Root window setup ─────────────────────────────────────────────────────
 
     def _configure_root(self) -> None:
-        self._root.title("llamagraph — llama-bench Visualizer")
+        self._root.title(WINDOW_TITLE_BASE)
         self._root.geometry("1680x900")
         self._root.configure(bg=COLORS['bg'])
         self._root.minsize(1200, 650)
@@ -355,6 +360,19 @@ class MainWindow:
 
     def set_metric_button_text(self, text: str) -> None:
         self._toggle_btn.config(text=text)
+
+    def set_graph_title(self, graph_title: str = "") -> None:
+        """
+        Append the current graph title to the OS window title.
+
+        The figures carry no in-plot title (their margin belongs to the
+        plot); an empty *graph_title* resets to the bare base title
+        (e.g. with no data loaded).
+        """
+        if graph_title:
+            self._root.title(f"{WINDOW_TITLE_BASE} — {graph_title}")
+        else:
+            self._root.title(WINDOW_TITLE_BASE)
 
     # ── Property accessors (read by Presenter) ────────────────────────────────
 

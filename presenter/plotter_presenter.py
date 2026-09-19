@@ -26,6 +26,8 @@ from utils.csv_parser import get_bench_file_meta, parse_bench_file
 from view.main_window import MainWindow
 from view.plot_view import (
     average_bucket,
+    build_2d_title,
+    build_3d_title,
     interp_surface_z,
     thin_value_ticks,
     render_2d,
@@ -181,6 +183,7 @@ class PlotterPresenter:
         self._current_selection = []
         self._selected_paths = []
         self._model.clear()
+        self._win.set_graph_title("")
         self._win.left_sidebar.update_series_toggles([])
         self._win.plot_view.show_placeholder(
             "📊 Select CSV/MD file(s) with Ctrl+Click to display"
@@ -528,6 +531,7 @@ class PlotterPresenter:
         Called whenever any control changes.
         """
         if not self._model.has_data():
+            self._win.set_graph_title("")
             self._win.plot_view.show_placeholder(
                 "📊 Select CSV/MD file(s) with Ctrl+Click to display"
             )
@@ -553,6 +557,7 @@ class PlotterPresenter:
         show_pp: bool, show_tg: bool
     ) -> None:
         if not x_param:
+            self._win.set_graph_title("")
             self._win.plot_view.show_placeholder("⚠ No parameter axis available.")
             return
 
@@ -593,6 +598,8 @@ class PlotterPresenter:
         )
 
         self._current_3d_ax = None
+        self._win.set_graph_title(
+            build_2d_title(x_param, self._win.unify, normalize))
         self._win.plot_view.render(fig, ax3d=None, on_pick_cb=self._on_pick)
 
     def _render_3d(
@@ -601,6 +608,7 @@ class PlotterPresenter:
     ) -> None:
         y_param = self._win.axis_y
         if not x_param or not y_param or x_param == y_param:
+            self._win.set_graph_title("")
             self._win.plot_view.show_placeholder(
                 "⚠ Select two different axes for 3D plot."
             )
@@ -684,6 +692,7 @@ class PlotterPresenter:
         self._last_3d = {'infos': infos, 'x_param': x_param, 'y_param': y_param,
                          'points': {'pp': points_pp, 'tg': points_tg}}
         self._connector_line = None  # new canvas drops the old connector
+        self._win.set_graph_title(build_3d_title(x_param, y_param))
         self._win.plot_view.render(fig, ax3d=ax, on_pick_cb=self._on_pick_3d)
 
         # Apply categorical tick labels if dimensions are string-valued

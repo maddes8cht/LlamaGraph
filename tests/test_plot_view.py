@@ -246,7 +246,8 @@ class TestRender2D:
         assert any("TG" in lbl for lbl in labels)
 
     def test_unified_mode(self):
-        """Unified mode → title contains 'Unified'."""
+        """Unified mode → build_2d_title contains 'Unified', figure has no title."""
+        from view.plot_view import build_2d_title
         fig = render_2d(
             datasets_raw=[
                 {'path': Path('/f1.csv')},
@@ -268,10 +269,11 @@ class TestRender2D:
             show_tg_flags=[True, True],
             do_unify=True,
         )
-        assert "Unified" in fig.axes[0].get_title()
+        assert "Unified" in build_2d_title("params", True, False)
+        assert fig.axes[0].get_title() == ""
 
     def test_normalized(self):
-        """Normalize=True + z_label_mode='%' → 'Normalized' in title, '%' in ylabel."""
+        """Normalize=True + z_label_mode='%' → 'Normalized' in window title, '%' in ylabel."""
         fig = render_2d(
             datasets_raw=[{'path': Path('/f.csv')}],
             series_data={
@@ -287,8 +289,10 @@ class TestRender2D:
             normalize=True,
             z_label_mode="%",
         )
+        from view.plot_view import build_2d_title
         ax = fig.axes[0]
-        assert "Normalized" in ax.get_title()
+        assert "Normalized" in build_2d_title("params", False, True)
+        assert ax.get_title() == ""
         assert "%" in ax.get_ylabel()
 
     def test_pp_flag_false(self):
@@ -467,6 +471,23 @@ class TestRender3D:
         # Axis labels
         assert "Params" in ax.get_xlabel()
         assert "N Gpu Layers" in ax.get_ylabel()
+
+    def test_no_figure_title_full_height(self):
+        """Title lives in the window title; figure uses full height."""
+        from view.plot_view import build_3d_title
+        points_pp = [(1.0, 2.0, 100.0, 5.0), (1.0, 3.0, 120.0, 6.0)]
+        fig, ax = render_3d(
+            points_pp=points_pp,
+            points_tg=[],
+            x_param="n_batch",
+            y_param="n_ubatch",
+            pp_color="#ff0000",
+            tg_color="#00ff00",
+        )
+        assert ax.get_title() == ""
+        assert "3D Parameter Space" in build_3d_title("n_batch", "n_ubatch")
+        assert fig.subplotpars.bottom == 0
+        assert fig.subplotpars.top == 1
 
     def test_error_bars(self):
         """Error bars enabled → vertical lines in plot."""

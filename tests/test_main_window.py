@@ -321,3 +321,24 @@ class TestLevelControls:
         render_cb.reset_mock()
         mw._commit_level_entry()  # entry already shows the current value
         render_cb.assert_not_called()
+
+
+class TestGraphTitle:
+    """Tests for MainWindow.set_graph_title() - OS window title."""
+
+    def test_appends_graph_title(self, tk_root):
+        """Non-empty title → base + graph title in the window title."""
+        from view.main_window import MainWindow, WINDOW_TITLE_BASE
+        mw = MainWindow(tk_root)
+        mw.set_graph_title("3D Parameter Space | X:N Batch Y:N Ubatch")
+        title = tk_root.title()
+        assert title.startswith(WINDOW_TITLE_BASE)
+        assert "3D Parameter Space" in title
+
+    def test_empty_resets_to_base(self, tk_root):
+        """Empty title → bare base title (e.g. with no data loaded)."""
+        from view.main_window import MainWindow, WINDOW_TITLE_BASE
+        mw = MainWindow(tk_root)
+        mw.set_graph_title("something")
+        mw.set_graph_title("")
+        assert tk_root.title() == WINDOW_TITLE_BASE
