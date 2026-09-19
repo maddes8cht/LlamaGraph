@@ -897,9 +897,9 @@ class TestLevelPlaneSurface:
         assert (verts[:, :, 2] == 7.5).all()
 
     def test_translucent_violet_no_edges(self):
-        from view.plot_view import _level_plane_surface
+        from view.plot_view import LEVEL_PLANE_ALPHA, _level_plane_surface
         _, colors = _level_plane_surface(0.0, 1.0, 0.0, 1.0, 0.5, 2)
-        assert all(c[3] == pytest.approx(0.25) for c in colors)
+        assert all(c[3] == pytest.approx(LEVEL_PLANE_ALPHA) for c in colors)
         # #8888e8 → equal red/blue, stronger blue than red? (0x88, 0x88, 0xe8)
         assert all(c[0] == pytest.approx(c[1]) and c[2] > c[0]
                    for c in colors)

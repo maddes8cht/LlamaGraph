@@ -729,7 +729,7 @@ def thin_value_ticks(values, max_ticks=MAX_VALUE_TICKS):
 # Level-plane appearance and grid density (divisions per side at
 # subdiv_level 0; scaled up with subdivision, capped).
 LEVEL_PLANE_COLOR = '#8888e8'
-LEVEL_PLANE_ALPHA = 0.25
+LEVEL_PLANE_ALPHA = 0.35
 LEVEL_BASE_DIVISIONS = 12
 LEVEL_MAX_DIVISIONS = 48
 
