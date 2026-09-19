@@ -460,7 +460,7 @@ class TestRender3D:
         assert ax.get_zlim() == (0, 100)
 
     def test_level_plane(self):
-        """show_level=True → additional surface collection for plane."""
+        """show_level=True → plane merged into the single collection."""
         pts = [(1.0, 2.0, 100.0, 5.0),
                (2.0, 3.0, 110.0, 5.0)]
         fig, ax = render_3d(
@@ -472,12 +472,9 @@ class TestRender3D:
             level_val=50,
         )
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-        # Level plane creates a Surface3DCollection (subclass of Poly3DCollection)
-        collections_before = len(ax.collections)
-        # At least some collections should be present (surface + level)
-        # We can't easily distinguish plane from trisurf by type alone,
-        # but we know more collections exist when level is on
-        assert len(ax.collections) >= 1
+        # Plane joins the merged surface collection (no second collection)
+        surf = [c for c in ax.collections if isinstance(c, Poly3DCollection)]
+        assert len(surf) == 1
 
     def test_wireframe_enabled(self):
         """show_wireframe=True → edge_c='black', linewidth>0."""
@@ -670,9 +667,9 @@ class TestDrawMergedSurfaces:
         )
         light = LightSource(azdeg=315, altdeg=45)
         cmap = LinearSegmentedColormap.from_list("t", ["#000000", "#ffffff"])
-        s1 = _series_face_colors(*tri, "#ff0000", cmap, "Solid", light)
-        s2 = _series_face_colors(*tri, "#00ff00", cmap, "Solid", light)
-        return s1, s2
+        v1, c1 = _series_face_colors(*tri, "#ff0000", cmap, "Solid", light)
+        v2, c2 = _series_face_colors(*tri, "#00ff00", cmap, "Solid", light)
+        return (v1, c1, 'none', 0.0), (v2, c2, 'none', 0.0)
 
     def test_both_series_in_single_collection(self):
         """PP + TG triangles land in ONE jointly sorted collection."""
@@ -685,15 +682,19 @@ class TestDrawMergedSurfaces:
         def spy(verts, **kwargs):
             seen['verts'] = np.asarray(verts)
             seen['colors'] = np.asarray(kwargs.get('facecolors'))
+            seen['edges'] = np.asarray(kwargs.get('edgecolors'))
+            seen['widths'] = np.asarray(kwargs.get('linewidths'))
             seen['zsort'] = kwargs.get('zsort')
             return RealColl(verts, **kwargs)
 
         with patch('view.plot_view.art3d.Poly3DCollection', side_effect=spy):
-            _draw_merged_surfaces(mock_ax, [s1, s2], 'none', 0)
+            _draw_merged_surfaces(mock_ax, [s1, s2])
         mock_ax.add_collection3d.assert_called_once()
         n_total = len(s1[0]) + len(s2[0])
         assert seen['verts'].shape[0] == n_total
         assert seen['colors'].shape == (n_total, 4)
+        assert seen['edges'].shape == (n_total, 4)
+        assert len(seen['widths']) == n_total
         assert seen['zsort'] == 'average'
         # Per-series colors preserved: red PP faces, green TG faces
         red = int((seen['colors'][:, 0] > 0.9).sum())
@@ -701,10 +702,34 @@ class TestDrawMergedSurfaces:
         assert red == len(s1[0])
         assert green == len(s2[0])
 
+    def test_level_plane_stays_edge_free(self):
+        """A 'none'-edge part yields transparent edges, data keeps Wire."""
+        from view.plot_view import _draw_merged_surfaces, art3d
+        s1, _ = self._surfaces()
+        wire = (s1[0], s1[1], 'black', 0.5)
+        plane = (s1[0], s1[1], 'none', 0.0)
+        mock_ax = MagicMock()
+        seen: dict = {}
+        RealColl = art3d.Poly3DCollection
+
+        def spy(verts, **kwargs):
+            seen['edges'] = np.asarray(kwargs.get('edgecolors'))
+            seen['widths'] = np.asarray(kwargs.get('linewidths'))
+            return RealColl(verts, **kwargs)
+
+        with patch('view.plot_view.art3d.Poly3DCollection', side_effect=spy):
+            _draw_merged_surfaces(mock_ax, [wire, plane])
+        n_wire = len(s1[0])
+        # Plane edge rows are fully transparent, data rows opaque black
+        assert bool((seen['edges'][n_wire:, 3] == 0.0).all())
+        assert bool((seen['edges'][:n_wire, 3] == 1.0).all())
+        assert bool((seen['widths'][:n_wire] == 0.5).all())
+        assert bool((seen['widths'][n_wire:] == 0.0).all())
+
     def test_empty_returns_none_without_drawing(self):
         from view.plot_view import _draw_merged_surfaces
         mock_ax = MagicMock()
-        assert _draw_merged_surfaces(mock_ax, [], 'none', 0) is None
+        assert _draw_merged_surfaces(mock_ax, []) is None
         mock_ax.add_collection3d.assert_not_called()
 
 
@@ -805,11 +830,43 @@ class TestMergedSurfaceRender:
         )
         light = LightSource(azdeg=315, altdeg=45)
         cmap = LinearSegmentedColormap.from_list("t", ["#000000", "#ffffff"])
-        s1 = _series_face_colors(*tri, "#ff0000", cmap, "Solid", light)
+        verts, colors = _series_face_colors(
+            *tri, "#ff0000", cmap, "Solid", light)
         mock_ax = MagicMock()
-        coll = _draw_merged_surfaces(mock_ax, [s1], 'black', 0.5)
+        coll = _draw_merged_surfaces(mock_ax, [(verts, colors, 'black', 0.5)])
         assert coll is not None
         mock_ax.add_collection3d.assert_called_once_with(coll)
+
+
+# ── _level_plane_surface ─────────────────────────────────────────────────
+
+
+class TestLevelPlaneSurface:
+    """Tests for _level_plane_surface (pure helper, no axes required)."""
+
+    def test_grid_shape_and_constant_z(self):
+        from view.plot_view import _level_plane_surface
+        verts, colors = _level_plane_surface(0.0, 4.0, 10.0, 20.0, 7.5, 4)
+        assert verts.shape == (2 * 4 * 4, 3, 3)
+        assert colors.shape == (2 * 4 * 4, 4)
+        assert (verts[:, :, 2] == 7.5).all()
+
+    def test_translucent_violet_no_edges(self):
+        from view.plot_view import _level_plane_surface
+        _, colors = _level_plane_surface(0.0, 1.0, 0.0, 1.0, 0.5, 2)
+        assert all(c[3] == pytest.approx(0.25) for c in colors)
+        # #8888e8 → equal red/blue, stronger blue than red? (0x88, 0x88, 0xe8)
+        assert all(c[0] == pytest.approx(c[1]) and c[2] > c[0]
+                   for c in colors)
+
+    def test_covers_full_range(self):
+        import numpy as np
+        from view.plot_view import _level_plane_surface
+        verts, _ = _level_plane_surface(0.0, 4.0, 10.0, 20.0, 7.5, 4)
+        assert verts[:, :, 0].min() == pytest.approx(0.0)
+        assert verts[:, :, 0].max() == pytest.approx(4.0)
+        assert verts[:, :, 1].min() == pytest.approx(10.0)
+        assert verts[:, :, 1].max() == pytest.approx(20.0)
 
 
 # ── CustomNavigationToolbar ────────────────────────────────────────────

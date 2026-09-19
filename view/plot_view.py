@@ -374,7 +374,9 @@ def render_3d(
         "custom_tg", [COLORS['bg'], tg_color, "#ffffff"]
     )
     light = LightSource(azdeg=315, altdeg=45)
-    surfaces: list = []  # (verts, colors) per series, drawn merged below
+    surfaces: list = []  # (verts, colors, edge, lw) per part, drawn merged below
+    edge_c = 'black' if show_wireframe else 'none'
+    lw = 0.5 if show_wireframe else 0
 
     def plot_series(pts, color, label, marker, cmap):
         if not pts:
@@ -413,12 +415,11 @@ def render_3d(
             )
             if tri is not None:
                 triangles, tx, ty, tz = tri
-                surfaces.append(
-                    _series_face_colors(
-                        triangles, tx, ty, tz,
-                        color, cmap, surface_style, light,
-                    )
+                verts, colors = _series_face_colors(
+                    triangles, tx, ty, tz,
+                    color, cmap, surface_style, light,
                 )
+                surfaces.append((verts, colors, edge_c, lw))
 
         # Scatter points
         ax.scatter(
@@ -436,24 +437,24 @@ def render_3d(
     plot_series(points_pp, pp_color, "PP", 'o', cmap_pp)
     plot_series(points_tg, tg_color, "TG", 's', cmap_tg)
 
-    # One joint surface collection so overlapping PP/TG triangles are
-    # depth-sorted against each other instead of one surface covering
-    # the other as a whole unit.
-    edge_c = 'black' if show_wireframe else 'none'
-    lw = 0.5 if show_wireframe else 0
-    _draw_merged_surfaces(ax, surfaces, edge_c, lw)
-
-    # Level plane
+    # One joint surface collection so overlapping PP/TG triangles — and
+    # the level plane below — are depth-sorted against each other
+    # instead of one surface covering the other as a whole unit.
     if show_level and all_zs:
         z_min, z_max = min(all_zs), max(all_zs)
         z_plane = z_min + (level_val / 100.0) * (z_max - z_min)
         if len(set(all_xs)) > 1 and len(set(all_ys)) > 1:
-            gx, gy = np.meshgrid(
-                np.linspace(min(all_xs), max(all_xs), 12),
-                np.linspace(min(all_ys), max(all_ys), 12),
+            # Grid density follows the surface subdivision for
+            # comparable triangle sizes at the crossing lines.
+            divisions = min(LEVEL_BASE_DIVISIONS * (subdiv_level + 1),
+                            LEVEL_MAX_DIVISIONS)
+            verts, colors = _level_plane_surface(
+                min(all_xs), max(all_xs), min(all_ys), max(all_ys),
+                z_plane, divisions,
             )
-            ax.plot_surface(gx, gy, np.full_like(gx, z_plane),
-                            color='#8888e8', alpha=0.25, zorder=1)
+            surfaces.append((verts, colors, 'none', 0.0))
+
+    _draw_merged_surfaces(ax, surfaces)
 
     # Axis labels
     ax.set_xlabel(x_param.replace('_', ' ').title(), color=COLORS['fg'])
@@ -636,27 +637,75 @@ def _series_face_colors(triangles, x, y, z, color, cmap, style, light):
     return verts, np.column_stack([np.tile(base, (n, 1)), np.full(n, 0.45)])
 
 
-def _draw_merged_surfaces(ax, surfaces, edge_c, lw):
+def _draw_merged_surfaces(ax, surfaces):
     """
-    Draw all series surfaces as ONE Poly3DCollection so Matplotlib's
-    painter algorithm depth-sorts every triangle jointly.
+    Draw every collected part as ONE
+    Poly3DCollection so Matplotlib's painter algorithm depth-sorts
+    every triangle jointly.
 
-    Separate collections are only sorted as whole units, which puts one
-    surface entirely above the other and flips that order while
-    rotating. Returns the collection, or None when there is nothing
-    to draw.
+    Each entry in *surfaces* is a (verts, colors, edge, lw) tuple;
+    per-face edge colors and widths let the level plane stay edge-free
+    while data surfaces honor the Wire toggle. Separate collections
+    are only sorted as whole units, which puts one surface entirely
+    above the other and flips that order while rotating. Returns the
+    collection, or None when there is nothing to draw.
     """
-    parts = [(v, c) for v, c in surfaces if v is not None and len(v)]
+    parts = [(v, c, e, w) for v, c, e, w in surfaces
+             if v is not None and len(v)]
     if not parts:
         return None
-    verts = np.vstack([v for v, _ in parts])
-    colors = np.vstack([c for _, c in parts])
+    verts = np.vstack([v for v, _, _, _ in parts])
+    colors = np.vstack([c for _, c, _, _ in parts])
+    edge_colors = np.vstack([
+        np.tile(to_rgba(edge), (len(v), 1)) for v, _, edge, _ in parts
+    ])
+    line_widths = np.concatenate([
+        np.full(len(v), w, dtype=float) for v, _, _, w in parts
+    ])
     coll = art3d.Poly3DCollection(
-        verts, facecolors=colors,
-        edgecolors=edge_c, linewidths=lw, zsort='average',
+        verts, facecolors=colors, edgecolors=edge_colors,
+        linewidths=line_widths, zsort='average',
     )
     ax.add_collection3d(coll)
     return coll
+
+
+# Level-plane appearance and grid density (divisions per side at
+# subdiv_level 0; scaled up with subdivision, capped).
+LEVEL_PLANE_COLOR = '#8888e8'
+LEVEL_PLANE_ALPHA = 0.25
+LEVEL_BASE_DIVISIONS = 12
+LEVEL_MAX_DIVISIONS = 48
+
+
+def _level_plane_surface(x0, x1, y0, y1, z_plane, divisions):
+    """
+    Level-plane triangles for the merged 3-D collection.
+
+    Regular grid of divisions×divisions quads (two triangles each) at
+    constant z, in translucent LEVEL_PLANE_COLOR. Returns
+    (verts, colors) with verts shaped (n, 3, 3).
+    """
+    gx, gy = np.meshgrid(np.linspace(x0, x1, divisions + 1),
+                         np.linspace(y0, y1, divisions + 1))
+    gz = np.full_like(gx, z_plane, dtype=float)
+    flat_x, flat_y, flat_z = gx.ravel(), gy.ravel(), gz.ravel()
+    nx = divisions + 1
+    tris = []
+    for iy in range(divisions):
+        for ix in range(divisions):
+            a = iy * nx + ix
+            b, c, d = a + 1, a + nx, a + nx + 1
+            tris.append((a, b, d))
+            tris.append((a, d, c))
+    triangles = np.array(tris)
+    verts = np.stack(
+        [flat_x[triangles], flat_y[triangles], flat_z[triangles]], axis=-1)
+    base = np.array(to_rgba(LEVEL_PLANE_COLOR), dtype=float)[:3]
+    colors = np.column_stack(
+        [np.tile(base, (len(triangles), 1)),
+         np.full(len(triangles), LEVEL_PLANE_ALPHA)])
+    return verts, colors
 
 
 def _set_series_zticks(ax, lo: Optional[float], hi: Optional[float]) -> None:

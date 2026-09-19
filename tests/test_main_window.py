@@ -252,3 +252,72 @@ class TestKeyBindings:
         mw._root.event_generate('<Escape>', when='tail')
         mw._root.update()
         quit_app.assert_called_once()
+
+
+# ── Level controls ────────────────────────────────────────────────────
+
+
+class TestLevelControls:
+    """Tests for the Lev stepper buttons and the editable value entry."""
+
+    def _make_window(self, tk_root):
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        render_cb = MagicMock()
+        mw.set_render_callback(render_cb)
+        return mw, render_cb
+
+    def test_initial_value_shown(self, tk_root):
+        """Entry starts with the default level value (50)."""
+        mw, _ = self._make_window(tk_root)
+        assert mw._ent_level.get() == "50"
+        assert mw.level_val == 50
+
+    def test_step_buttons_nudge_and_render(self, tk_root):
+        """Arrow buttons change the value by ±1 and re-render."""
+        mw, render_cb = self._make_window(tk_root)
+        mw._btn_level_up.invoke()
+        assert mw.level_val == 51
+        assert mw._ent_level.get() == "51"
+        mw._btn_level_down.invoke()
+        mw._btn_level_down.invoke()
+        assert mw.level_val == 49
+        assert render_cb.call_count == 3
+
+    def test_step_clamps_at_bounds(self, tk_root):
+        """Stepping past 0/100 clamps instead of wrapping."""
+        mw, _ = self._make_window(tk_root)
+        mw._set_level_value(0)
+        mw._btn_level_down.invoke()
+        assert mw.level_val == 0
+        mw._set_level_value(100)
+        mw._btn_level_up.invoke()
+        assert mw.level_val == 100
+
+    def test_entry_commit_takes_valid_value(self, tk_root):
+        """Typing a number and committing applies it (clamped)."""
+        mw, render_cb = self._make_window(tk_root)
+        mw._ent_level.delete(0, "end")
+        mw._ent_level.insert(0, "200")
+        mw._commit_level_entry()
+        assert mw.level_val == 100
+        assert mw._ent_level.get() == "100"
+        render_cb.assert_called()
+
+    def test_entry_commit_reverts_garbage(self, tk_root):
+        """Non-numeric entry restores the current value without rendering."""
+        mw, render_cb = self._make_window(tk_root)
+        render_cb.reset_mock()
+        mw._ent_level.delete(0, "end")
+        mw._ent_level.insert(0, "abc")
+        mw._commit_level_entry()
+        assert mw.level_val == 50
+        assert mw._ent_level.get() == "50"
+        render_cb.assert_not_called()
+
+    def test_noop_commit_skips_render(self, tk_root):
+        """Unchanged value (e.g. focus passthrough) triggers no render."""
+        mw, render_cb = self._make_window(tk_root)
+        render_cb.reset_mock()
+        mw._commit_level_entry()  # entry already shows the current value
+        render_cb.assert_not_called()
