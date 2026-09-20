@@ -673,6 +673,26 @@ def snap_roll_zero(ax) -> bool:
     return False
 
 
+def apply_proj_type(ax, proj_type: str = "persp") -> None:
+    """
+    Apply the 3-D camera projection: "persp" (default, focal length 1)
+    or "ortho" (parallel projection, no perspective distortion).
+
+    Must run per figure build because render_3d recreates the axes on
+    every re-render. Unknown values fall back to "persp". Best effort
+    on old matplotlib without set_proj_type: silently keeps perspective
+    instead of breaking the render. Never raises.
+    """
+    mode = (proj_type or "persp").strip().lower() \
+        if isinstance(proj_type, str) else "persp"
+    if mode not in ("persp", "ortho"):
+        mode = "persp"
+    try:
+        ax.set_proj_type(mode)
+    except Exception:
+        pass
+
+
 # ── 3-D Rendering ─────────────────────────────────────────────────────────────
 
 def build_3d_title(x_param: str, y_param: str) -> str:
@@ -699,6 +719,7 @@ def render_3d(
     show_projections: Optional[bool] = None,
     projection_mode: str = "none",
     show_errors_3d: bool = True,
+    proj_type: str = "persp",
     show_level: bool = False,
     level_val: int = 50,
     surface_style: str = "Solid",
@@ -765,6 +786,10 @@ def render_3d(
         face on every limit change, so panning or zooming never
         detaches them from the walls (row colors and grouping stay
         home-referenced).
+    proj_type:
+        Camera projection: "persp" (default perspective) or "ortho"
+        (parallel projection, no foreshortening — pairs well with the
+        Colormap style as a color-coded heightmap).
     """
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
@@ -778,6 +803,7 @@ def render_3d(
     bg = COLORS['bg'] if dark_mode else 'white'
     fig = Figure(figsize=(11, 7), facecolor=bg)
     ax = fig.add_subplot(111, projection='3d')
+    apply_proj_type(ax, proj_type)
     ax.set_facecolor(bg)
     # Tighter-than-default data limits: the default 5 % autoscale padding
     # costs plot area on every side without adding information here —

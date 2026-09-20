@@ -64,6 +64,7 @@ class MainWindow:
         projection_mode: str = "none",
         show_errors: bool = True,
         dolly: bool = True,
+        ortho: bool = False,
         z_label_mode: str = "both-norm",
         show_level: bool = False,
         level_value: int = 50,
@@ -96,6 +97,7 @@ class MainWindow:
         if show_projections is True and mode == "none":
             mode = "back"
         self._proj_mode_var = tk.StringVar(value=mode)
+        self._ortho_var = tk.IntVar(value=1 if ortho else 0)
         self._show_errors_3d = tk.IntVar(value=1 if show_errors else 0)
         self._dolly_var = tk.IntVar(value=1 if dolly else 0)
         self._z_label_mode = tk.StringVar(value=z_label_mode)
@@ -196,6 +198,14 @@ class MainWindow:
             selectcolor=COLORS['checkbox_active'],
             font=('Segoe UI', 9),
         ).pack(side=tk.LEFT, padx=10)
+
+        tk.Checkbutton(
+            bar, text=" 📷 Ortho", variable=self._ortho_var,
+            command=self._on_render,
+            bg=COLORS['bg'], fg='#cccccc',
+            selectcolor=COLORS['checkbox_active'],
+            font=('Segoe UI', 9),
+        ).pack(side=tk.LEFT, padx=5)
 
         chk(" Lev", self._show_level_var, '#9cdcfe', self._on_render).pack(
             side=tk.LEFT, padx=5)
@@ -377,10 +387,57 @@ class MainWindow:
         toggle_metric: Callable,
         refresh: Callable,
         quit_app: Callable,
+        view_keys: Optional[dict[str, Callable]] = None,
     ) -> None:
+        """
+        Register global keyboard shortcuts.
+
+        *view_keys* maps single digits ("0", "1", "3", "5", "7") to
+        Blender-style 3-D view callbacks; both the main row and the
+        numpad (KP_1 …) are bound. Digit shortcuts stay silent while a
+        text/list widget has focus (level entry, comboboxes, file and
+        filter lists), so typing values never flips the camera.
+        """
         self._root.bind('<Control-t>', lambda _e: toggle_metric())
         self._root.bind('<Control-r>', lambda _e: refresh())
         self._root.bind('<Escape>', lambda _e: quit_app())
+        for key, callback in (view_keys or {}).items():
+            guarded = self._guarded_view_key(callback)
+            self._root.bind(f'<Key-{key}>', guarded)
+            self._root.bind(f'<Key-KP_{key}>', guarded)
+
+    def _guarded_view_key(self, callback: Callable) -> Callable:
+        """Wrap a digit shortcut so text/list input keeps working."""
+        def _handler(_event=None):
+            if not self._view_key_allowed():
+                return
+            callback()
+        return _handler
+
+    def _view_key_allowed(self) -> bool:
+        """False when the focus sits in an input widget (never raises)."""
+        try:
+            widget = self._root.focus_get()
+        except Exception:
+            return False
+        if widget is None:
+            return True
+        try:
+            blocked = (tk.Entry, tk.Text, tk.Spinbox, tk.Listbox,
+                       ttk.Combobox, ttk.Entry, ttk.Spinbox, ttk.Treeview)
+        except AttributeError:
+            return True
+        try:
+            return not isinstance(widget, blocked)
+        except Exception:
+            return False
+
+    def set_ortho(self, enabled: bool) -> None:
+        """Set the Ortho checkbox state (driven by shortcut key 5/1/3/7/0)."""
+        try:
+            self._ortho_var.set(1 if enabled else 0)
+        except tk.TclError:
+            pass
 
     # ── Public state: axis comboboxes ─────────────────────────────────────────
 
@@ -467,6 +524,14 @@ class MainWindow:
     @property
     def dolly(self) -> bool:
         return bool(self._dolly_var.get())
+
+    @property
+    def ortho(self) -> bool:
+        return bool(self._ortho_var.get())
+
+    @property
+    def proj_type(self) -> str:
+        return "ortho" if self.ortho else "persp"
 
     @property
     def z_label_mode(self) -> str:
