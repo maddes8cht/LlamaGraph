@@ -165,13 +165,17 @@ class RightSidebar(tk.Frame):
                 self._build_section(
                     dim, values, current_filters.get(dim, set(values)),
                     axis_label=self._axis_badge(dim, active_order),
+                    # The last axis section drops its own trailing line
+                    # when the group separator below takes over.
+                    show_separator=not (
+                        other_dims and dim == axis_dims[-1]),
                 )
 
         if other_dims:
             if axis_dims:
                 self._build_group_separator("Other Dimensions")
             else:
-                self._build_group_header("Other Dimensions")
+                self._build_group_header("Dimensions")
             for dim in other_dims:
                 values = dim_values[dim]
                 self._build_section(
@@ -226,13 +230,16 @@ class RightSidebar(tk.Frame):
     def _build_section(
         self, dim: str, values: list, selected_values: set,
         axis_label: Optional[str] = None,
+        show_separator: bool = True,
     ) -> None:
         """
         Build one filter section for *dim*.
 
         *axis_label* is "X" / "Y" when the dimension drives a plot
         axis and None otherwise; it is shown as a badge prefix in the
-        section header (e.g. "X: N Batch").
+        section header (e.g. "X: N Batch").  *show_separator* controls
+        the trailing separator line (suppressed where a group
+        separator follows instead, so lines never double up).
         """
         section = tk.Frame(self._inner_frame, bg=COLORS['bg'])
         section.pack(fill=tk.X, padx=4, pady=(6, 2))
@@ -298,10 +305,11 @@ class RightSidebar(tk.Frame):
 
         self._sections[dim] = {'listbox': lb, 'values': values}
 
-        # Separator
-        tk.Frame(self._inner_frame, bg=COLORS['separator'], height=1).pack(
-            fill='x', padx=4, pady=2
-        )
+        # Separator (skipped where a group separator follows instead)
+        if show_separator:
+            tk.Frame(self._inner_frame, bg=COLORS['separator'], height=1).pack(
+                fill='x', padx=4, pady=2
+            )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -227,6 +227,56 @@ class TestUpdateFilterSections:
                 mock_header.assert_called_once_with("Plot Axes")
                 mock_sep.assert_not_called()
 
+    def test_neutral_header_without_axis_dims(self):
+        """No axis dims → plain "Dimensions" header, no separator."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with (
+                patch.object(rs, '_build_section') as mock_build,
+                patch.object(rs, '_build_group_header') as mock_header,
+                patch.object(rs, '_build_group_separator') as mock_sep,
+            ):
+                rs.update_filter_sections(
+                    {"dim1": ["a", "b"], "dim2": ["x", "y"]},
+                    [],
+                    {},
+                )
+                assert mock_build.call_count == 2
+                mock_header.assert_called_once_with("Dimensions")
+                mock_sep.assert_not_called()
+
+    def test_no_double_separator_before_other_group(self):
+        """Last axis section skips its line where the group separator follows."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with patch.object(rs, '_build_section') as mock_build:
+                rs.update_filter_sections(
+                    {"dim_a": [1, 2], "dim_b": [10, 20]},
+                    ["dim_a"],
+                    {},
+                )
+                assert mock_build.call_count == 2
+                axis_kwargs = mock_build.call_args_list[0].kwargs
+                other_kwargs = mock_build.call_args_list[1].kwargs
+                assert axis_kwargs.get("show_separator") is False
+                assert other_kwargs.get("show_separator", True) is True
+
+    def test_axis_separator_kept_without_other_group(self):
+        """Only axes present → axis sections keep their own separator."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with patch.object(rs, '_build_section') as mock_build:
+                rs.update_filter_sections(
+                    {"dim1": ["a", "b"], "dim2": ["x", "y"]},
+                    ["dim1", "dim2"],
+                    {},
+                )
+                for call in mock_build.call_args_list:
+                    assert call.kwargs.get("show_separator", True) is True
+
     def test_current_filters_passed_to_build(self):
         """Current filter set is forwarded as the third argument."""
         with _patched_rs() as (rs, _):
