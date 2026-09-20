@@ -32,6 +32,21 @@ It lets you visually explore the parameter space — any combination of `--n-gpu
 
 The interface is meant to be mostly self-explanatory after a bit of clicking around. A proper user guide will come later.
 
+### Keyboard shortcuts
+
+- `Ctrl+T`: toggle tokens/s ↔ latency · `Ctrl+R`: refresh file list · `Esc`: quit
+- 3-D view, Blender-style (main digit row and numpad, 3-D mode only):
+  - `1` front view (X-Z plane), `3` side view (Y-Z plane), `7` top view
+    (X-Y plane) — all three switch to parallel projection automatically
+  - `5` toggle perspective ↔ parallel projection from any angle
+  - `0` home view (restores perspective automatically)
+- Perspective is the default camera. **Ortho** (upper toolbar, `📷 Ortho`)
+  selects parallel projection with no foreshortening — combined with the
+  Colormap surface style, the top view (`7`) reads as a color-coded
+  heightmap.
+- Digit keys stay silent while typing in inputs (level field, dropdowns)
+  or navigating the file/filter lists.
+
 ### Examples
 
 This is just a short introduction by example.  
