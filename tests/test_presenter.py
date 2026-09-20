@@ -529,7 +529,7 @@ def test_get_active_axes_2d(tmp_path):
     window._axis_x = "params"
     window._mode_3d = 0
     axes = presenter._get_active_axes()
-    assert axes == {"params"}
+    assert axes == ["params"]
 
 
 def test_get_active_axes_3d(tmp_path):
@@ -541,7 +541,7 @@ def test_get_active_axes_3d(tmp_path):
     window._axis_y = "n_gpu_layers"
     window._mode_3d = 1
     axes = presenter._get_active_axes()
-    assert axes == {"params", "n_gpu_layers"}
+    assert axes == ["params", "n_gpu_layers"]
 
 
 def test_get_active_axes_empty(tmp_path):
@@ -550,7 +550,7 @@ def test_get_active_axes_empty(tmp_path):
     presenter = PlotterPresenter(window, tmp_path)
 
     axes = presenter._get_active_axes()
-    assert axes == set()
+    assert axes == []
 
 
 def test_toggle_metric(tmp_path):

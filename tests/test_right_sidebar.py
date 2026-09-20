@@ -127,17 +127,21 @@ class TestUpdateFilterSections:
                 assert rs._sections == {}
 
     def test_all_dims_are_active_axes(self):
-        """Every dim is in active_axes → nothing to show."""
+        """Active axes are shown first under the Plot Axes group."""
         with _patched_rs() as (rs, _):
             rs._inner_frame.winfo_children.return_value = []
 
             with patch.object(rs, '_build_section') as mock_build:
                 rs.update_filter_sections(
                     {"dim1": ["a", "b"], "dim2": ["x", "y"]},
-                    {"dim1", "dim2"},
+                    ["dim1", "dim2"],
                     {},
                 )
-                mock_build.assert_not_called()
+                assert mock_build.call_count == 2
+                called_dims = [call[0][0] for call in mock_build.call_args_list]
+                assert called_dims == ["dim1", "dim2"]
+                assert mock_build.call_args_list[0].kwargs.get("axis_label") == "X"
+                assert mock_build.call_args_list[1].kwargs.get("axis_label") == "Y"
 
     def test_excludes_dims_with_single_value(self):
         """A dim with only 1 value is excluded (needs >1 for filtering)."""
@@ -155,21 +159,123 @@ class TestUpdateFilterSections:
                 assert args[0] == "dim2"
 
     def test_builds_sections_for_inactive_dims(self):
-        """Non-active dims with >1 value → _build_section called for each."""
+        """Axis dims come first (X, Y order), then the other dimensions."""
         with _patched_rs() as (rs, _):
             rs._inner_frame.winfo_children.return_value = []
 
             with patch.object(rs, '_build_section') as mock_build:
                 rs.update_filter_sections(
                     {"dim_a": [1, 2], "dim_b": [10, 20], "dim_c": [1, 2]},
-                    {"dim_b"},
+                    ["dim_b"],
+                    {},
+                )
+                assert mock_build.call_count == 3
+                called_dims = [call[0][0] for call in mock_build.call_args_list]
+                assert called_dims == ["dim_b", "dim_a", "dim_c"]
+                assert mock_build.call_args_list[0].kwargs.get("axis_label") == "X"
+                assert "axis_label" not in mock_build.call_args_list[1].kwargs
+                assert "axis_label" not in mock_build.call_args_list[2].kwargs
+
+    def test_axis_dim_with_single_value_hidden(self):
+        """An axis dim with one value is hidden; others still show."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with patch.object(rs, '_build_section') as mock_build:
+                rs.update_filter_sections(
+                    {"dim1": ["only"], "dim2": ["a", "b"]},
+                    ["dim1"],
+                    {},
+                )
+                mock_build.assert_called_once()
+                args = mock_build.call_args[0]
+                assert args[0] == "dim2"
+
+    def test_group_headers_and_separator(self):
+        """Plot Axes header first, then a separator before Other Dimensions."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with (
+                patch.object(rs, '_build_section'),
+                patch.object(rs, '_build_group_header') as mock_header,
+                patch.object(rs, '_build_group_separator') as mock_sep,
+            ):
+                rs.update_filter_sections(
+                    {"dim_a": [1, 2], "dim_b": [10, 20]},
+                    ["dim_b"],
+                    {},
+                )
+                mock_header.assert_any_call("Plot Axes")
+                mock_sep.assert_called_once_with("Other Dimensions")
+
+    def test_no_second_group_without_other_dims(self):
+        """Only axes present → no Other Dimensions separator."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with (
+                patch.object(rs, '_build_section'),
+                patch.object(rs, '_build_group_header') as mock_header,
+                patch.object(rs, '_build_group_separator') as mock_sep,
+            ):
+                rs.update_filter_sections(
+                    {"dim1": ["a", "b"]},
+                    ["dim1"],
+                    {},
+                )
+                mock_header.assert_called_once_with("Plot Axes")
+                mock_sep.assert_not_called()
+
+    def test_neutral_header_without_axis_dims(self):
+        """No axis dims → plain "Dimensions" header, no separator."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with (
+                patch.object(rs, '_build_section') as mock_build,
+                patch.object(rs, '_build_group_header') as mock_header,
+                patch.object(rs, '_build_group_separator') as mock_sep,
+            ):
+                rs.update_filter_sections(
+                    {"dim1": ["a", "b"], "dim2": ["x", "y"]},
+                    [],
                     {},
                 )
                 assert mock_build.call_count == 2
-                called_dims = [call[0][0] for call in mock_build.call_args_list]
-                assert "dim_a" in called_dims
-                assert "dim_c" in called_dims
-                assert "dim_b" not in called_dims
+                mock_header.assert_called_once_with("Dimensions")
+                mock_sep.assert_not_called()
+
+    def test_no_double_separator_before_other_group(self):
+        """Last axis section skips its line where the group separator follows."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with patch.object(rs, '_build_section') as mock_build:
+                rs.update_filter_sections(
+                    {"dim_a": [1, 2], "dim_b": [10, 20]},
+                    ["dim_a"],
+                    {},
+                )
+                assert mock_build.call_count == 2
+                axis_kwargs = mock_build.call_args_list[0].kwargs
+                other_kwargs = mock_build.call_args_list[1].kwargs
+                assert axis_kwargs.get("show_separator") is False
+                assert other_kwargs.get("show_separator", True) is True
+
+    def test_axis_separator_kept_without_other_group(self):
+        """Only axes present → axis sections keep their own separator."""
+        with _patched_rs() as (rs, _):
+            rs._inner_frame.winfo_children.return_value = []
+
+            with patch.object(rs, '_build_section') as mock_build:
+                rs.update_filter_sections(
+                    {"dim1": ["a", "b"], "dim2": ["x", "y"]},
+                    ["dim1", "dim2"],
+                    {},
+                )
+                for call in mock_build.call_args_list:
+                    assert call.kwargs.get("show_separator", True) is True
 
     def test_current_filters_passed_to_build(self):
         """Current filter set is forwarded as the third argument."""
@@ -340,3 +446,53 @@ class TestOnAnyFilterChange:
             rs._filter_change_cb = None
 
             rs._on_any_filter_change(None)  # should not raise
+
+
+# ── _axis_badge / selection mode ──────────────────────────────────────
+
+
+class TestAxisBadge:
+    """Tests for RightSidebar._axis_badge() - X/Y badge mapping."""
+
+    def test_first_axis_is_x(self):
+        """First entry of the ordered axes is the X axis."""
+        assert RightSidebar._axis_badge("n_batch", ["n_batch", "n_gpu"]) == "X"
+
+    def test_second_axis_is_y(self):
+        """Second entry of the ordered axes is the Y axis."""
+        assert RightSidebar._axis_badge("n_gpu", ["n_batch", "n_gpu"]) == "Y"
+
+    def test_non_axis_returns_none(self):
+        """A dimension outside the ordered axes has no badge."""
+        assert RightSidebar._axis_badge("other", ["n_batch", "n_gpu"]) is None
+
+    def test_empty_axes_returns_none(self):
+        """No active axes → no badge."""
+        assert RightSidebar._axis_badge("dim", []) is None
+
+    def test_single_axis_only_x(self):
+        """2-D mode with one axis: only X exists, nothing maps to Y."""
+        assert RightSidebar._axis_badge("x_dim", ["x_dim"]) == "X"
+        assert RightSidebar._axis_badge("other", ["x_dim"]) is None
+
+
+class TestExtendedSelectionMode:
+    """Both listboxes use EXTENDED so plain click selects one item."""
+
+    def test_filter_listbox_uses_extended_mode(self):
+        """Filter value listboxes are created with selectmode=EXTENDED."""
+        with _patched_rs() as (rs, lb_mock):
+            rs._sections = {}
+            rs._build_section("dim", ["a", "b"], set())
+            call_kwargs = lb_mock.call_args.kwargs
+            assert call_kwargs["selectmode"] == tk.EXTENDED
+
+    def test_build_section_axis_badge_in_header(self):
+        """An axis badge is prefixed to the section header text."""
+        with _patched_rs() as (rs, _):
+            rs._sections = {}
+            with patch('view.right_sidebar.tk.Label') as mock_label:
+                rs._build_section("n_batch", [512, 1024], {512},
+                                  axis_label="X")
+                header_text = mock_label.call_args.kwargs.get("text", "")
+                assert header_text.startswith("  X:")
