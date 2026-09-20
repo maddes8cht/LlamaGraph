@@ -26,7 +26,9 @@
 `--grid` CLI flag or `::grid` params directive: instead of phase-by-phase tuning, **every** combination of all `::optimize` targets is tested in a single `llama-bench` run (values are comma-joined per flag).
 - Base values of optimized flags are ignored — only the `::optimize` lists count.
 - The run prints the total combination count; above 50 tests it asks for confirmation, then counts down 3 seconds before starting.
-- Result files use the same timestamp scheme with `grid` in the name (`bench_<model>_grid_<timestamp>.csv/.md`); the best overall configuration is reported the same way as in sequential mode.
+- Result files use the same timestamp scheme with `grid` in the name (`bench_<model>_grid_<timestamp>.csv/.md`).
+- **Weighted PP/TG ranking:** every combination is grouped by its parameters (best PP + best TG each; incomplete combinations without both are skipped), both metrics are min-max normalized over the grid dataset, and each combination is scored per TG/PP weighting. Scoring lives in [`model/ranking.py`](../../model/ranking.py) (see [`model/ranking.README.md`](../../model/ranking.README.md)); the result file holds a Markdown table with one 4-row block per rank (`par` = copy-paste-ready params, `pp`/`tg` = raw t/s, `score` = weighted normalized value). Columns run from pure TG to pure PP: `TG | 70/30 | 50/50 | 30/70 | PP` (stored TG-first: `1/0 … 0/1`).
+- Use `--top N` for N ranks per weighting (default: `1`) and `--table-weights` for custom columns (default: `1/0,0.7/0.3,0.5/0.5,0.3/0.7,0/1`); both are also accepted as `::top` / `::table-weights` params directives (CLI wins).
 
 ## 🖥️ CLI Usage
 ```bash
@@ -41,9 +43,11 @@ python llama-optimizer.py [OPTIONS]
 | `-m`, `--model`   | Direct path to a `.gguf` model. Overrides interactive selection.            |
 | `--output-dir`    | Directory for result CSV/TXT files (default: current directory, overrides `::output-dir`). Created if missing. |
 | `--output-format` | `both` (default), `csv` or `md`. `both` writes `bench_*.csv` (for LlamaGraph) + `bench_*.md` (human-readable) per run; overrides `::output-format`. |
+| `--top`           | Grid mode only: result rows per TG/PP weighting (default: `1`, overrides `::top`). |
+| `--table-weights` | Grid mode only: comma-separated `TG/PP` weightings, e.g. `1/0,0.7/0.3,0.5/0.5,0.3/0.7,0/1` (default: `TG\|70/30\|50/50\|30/70\|PP`, overrides `::table-weights`). |
 
 ## 📁 Output & File Naming
-All result files (`bench_*.csv`, `bench_*.md`, `opt_results_*.txt`) are written to `--output-dir` (or `::output-dir` from the params file, CLI wins). Default is the current working directory. The directory is created if missing. `--output-format` (or `::output-format`, CLI wins, default `both`) controls the benchmark artifacts: `both` = CSV via `llama-bench -o csv` (stdout) plus Markdown via `-oe md` (stderr) in a single run; `csv`/`md` = only one variant. The CSV variant is required for LlamaGraph plots and for the script's own auto-evaluation (`md`-only runs skip the phase evaluation with a warning).
+All result files (`bench_*.csv`, `bench_*.md`, `opt_results_*.md`) are written to `--output-dir` (or `::output-dir` from the params file, CLI wins). Default is the current working directory. The directory is created if missing. `--output-format` (or `::output-format`, CLI wins, default `both`) controls the benchmark artifacts: `both` = CSV via `llama-bench -o csv` (stdout) plus Markdown via `-oe md` (stderr) in a single run; `csv`/`md` = only one variant. The CSV variant is required for LlamaGraph plots and for the script's own auto-evaluation (`md`-only runs skip the phase evaluation with a warning).
 
 Each optimization phase generates a CSV file with the following naming schema:
 ```
@@ -72,5 +76,5 @@ Every `llama-bench` invocation is printed in a distinct, copy-paste-friendly blo
 - A properly formatted `params.txt` (see linked guide)
 
 ## ⚠️ Notes
-- The optimizer only evaluates `tg` (text generation) performance (`t/s`). Prompt processing (`pp`) metrics are currently ignored but can be added if needed.
+- Sequential mode evaluates `tg` (text generation) performance (`t/s`) only; prompt processing (`pp`) metrics are ignored there. Grid mode ranks weighted `pp`+`tg` combinations (see above).
 - If `llama-bench` exits with a non-zero status, the script stops immediately and prints the exact `stderr` from the binary.

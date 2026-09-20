@@ -51,6 +51,12 @@ Note: relative paths are resolved against the current working directory, not aga
 ### `::grid`
 *(Flag, no value)* Enables grid search mode, same as CLI `--grid`: all `::optimize` combinations are tested in a single `llama-bench` run instead of phase by phase. Base values of optimized flags are ignored in this mode.
 
+### `::top <N>`
+*(Optional, grid mode only)* Result rows per TG/PP weighting in the ranking table. Overridden by CLI `--top`. Default `1`.
+
+### `::table-weights <list>`
+*(Optional, grid mode only)* Comma-separated `TG/PP` weightings for the ranking table columns, e.g. `1/0,0.7/0.3,0.5/0.5,0.3/0.7,0/1` (TG share first; renders as `TG | 70/30 | 50/50 | 30/70 | PP`). Overridden by CLI `--table-weights`. Scoring details: see `model/ranking.README.md`.
+
 ### `::optimize-order <param1>,<param2>,...`
 *(Optional)* Explicitly defines the execution sequence for optimization phases.  
 **If omitted:** The script automatically uses the order in which `::optimize` directives appear in the file.

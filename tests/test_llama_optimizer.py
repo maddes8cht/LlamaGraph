@@ -198,6 +198,77 @@ def test_extract_repetitions():
     assert opt.extract_repetitions(["-r", "bogus"]) == 1
 
 
+def test_resolve_top():
+    assert opt.resolve_top(None, {}) == 1
+    assert opt.resolve_top(3, {}) == 3
+    assert opt.resolve_top(None, {"top": "2"}) == 2
+    assert opt.resolve_top(2, {"top": "5"}) == 2  # CLI wins
+    assert opt.resolve_top(0, {}) == 1
+    assert opt.resolve_top(None, {"top": "bogus"}) == 1
+
+
+def test_resolve_top_warns_on_invalid(capsys):
+    assert opt.resolve_top(None, {"top": "bogus"}) == 1
+    assert "Invalid ::top" in capsys.readouterr().out
+    assert opt.resolve_top(None, {"top": "0"}) == 1
+    assert "Invalid ::top" in capsys.readouterr().out
+    # missing value stays silent (plain default)
+    assert opt.resolve_top(None, {}) == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_resolve_table_weights_strict_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        opt.resolve_table_weights("bogus", {}, strict=True)
+    # lenient default still falls back
+    assert opt.resolve_table_weights("bogus", {}) is not None
+
+
+def test_resolve_table_weights_default_headers():
+    from model import ranking as ranking_mod
+    weights = opt.resolve_table_weights(None, {})
+    assert [ranking_mod.header_for_weight(w) for w in weights] == [
+        "TG", "70/30", "50/50", "30/70", "PP"]
+
+
+def test_resolve_table_weights_cli_wins_and_invalid_falls_back(capsys):
+    from model import ranking as ranking_mod
+    weights = opt.resolve_table_weights("1/0,0/1", {"table-weights": "0.5/0.5"})
+    assert weights == [(1.0, 0.0), (0.0, 1.0)]
+    weights = opt.resolve_table_weights(None, {"table-weights": "bogus"})
+    assert weights == ranking_mod.default_weights()
+    assert "Invalid weighting" in capsys.readouterr().out
+
+
+def test_build_grid_param_map():
+    assert opt.build_grid_param_map(["--batch-size", "-ngl"]) == {
+        "--batch-size": "n_batch", "-ngl": "n_gpu_layers"}
+
+
+def test_grid_ranking_end_to_end(tmp_path):
+    """Grid CSV -> ranking entries -> weighted result set (TG..PP)."""
+    from model import ranking as ranking_mod
+    csv_file = tmp_path / "grid.csv"
+    csv_file.write_text(
+        "test,n_ubatch,avg_ts\n"
+        "pp512,128,1000.0\n"
+        "tg128,128,100.0\n"
+        "pp512,256,2000.0\n"
+        "tg128,256,60.0\n",
+        encoding="utf-8",
+    )
+    param_map = opt.build_grid_param_map(["--ubatch-size"])
+    entries = ranking_mod.parse_grid_csv(csv_file, param_map)
+    assert len(entries) == 2
+    weights = opt.resolve_table_weights(None, {})
+    result = ranking_mod.rank(entries, weights, opt.resolve_top(None, {}))
+    assert result["headers"][0] == "TG" and result["headers"][-1] == "PP"
+    assert result["cells"][0][0]["params"] == {"--ubatch-size": "128"}
+    assert result["cells"][-1][0]["params"] == {"--ubatch-size": "256"}
+    assert "70/30" in ranking_mod.render_markdown(result)
+
+
 def test_extract_metadata(tmp_path):
     csv_file = tmp_path / "b.csv"
     csv_file.write_text(
