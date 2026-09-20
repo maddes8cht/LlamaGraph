@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-llama-optimizer.py (v3.0 + Grid Search Mode)
+llama-optimizer.py (v3.0 + Grid Search Mode + Weighted Ranking)
 Sequential & Grid parameter wrapper for llama-bench.
-- Supports sequential phase-by-phase optimization (default)
+- Supports sequential phase-by-phase optimization (default, TG-only)
 - Supports full matrix/grid search via --grid CLI flag or ::grid directive
+- Grid mode ranks all combinations with weighted PP/TG scores
+  (see model/ranking.py; --top / --table-weights)
 - Extracts system/model metadata from the first CSV output
-- Logs all phases, warnings, and final recommendations to a unified .txt file
+- Logs all phases, warnings, and final recommendations to a unified .md file
 - Maintains consistent timestamping for run grouping
 """
 import os
@@ -23,6 +25,17 @@ from collections import defaultdict, OrderedDict
 from math import prod
 from functools import reduce
 import operator
+
+# Shared weighted PP/TG ranking (single source of truth in model/ranking.py).
+# The optimizer stays runnable standalone from its own directory: fall back
+# to adding the repo root (two levels up) to sys.path when needed.
+try:
+    from model import ranking as ranking_mod
+except ModuleNotFoundError:
+    _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from model import ranking as ranking_mod
 
 # ==================== Color Constants ====================
 CLR_CYAN = "\033[96m"
@@ -190,6 +203,57 @@ def output_args_for(fmt: str) -> list:
     return ['-o', 'csv', '-oe', 'md']  # 'both': csv->stdout, md->stderr
 
 
+# ==================== Weighted Ranking Options (grid mode only) ====================
+# Table columns run from pure TG to increasing PP share, stored TG-first:
+#   TG | 70/30 | 50/50 | 30/70 | PP  ==  1/0 | 0.7/0.3 | 0.5/0.5 | 0.3/0.7 | 0/1
+# Scoring itself lives in model/ranking.py; here only CLI/config resolution.
+
+def resolve_top(cli_val, configs: dict) -> int:
+    """CLI --top wins, then ::top from params file, else 1 (rows per weighting).
+
+    A present-but-invalid value warns and falls back to 1; a missing
+    value stays silent (it is just the default).
+    """
+    raw = cli_val if cli_val is not None else configs.get('top', None)
+    source = "--top" if cli_val is not None else "::top"
+    if raw is None or raw is True:
+        return 1
+    try:
+        top = int(str(raw).strip())
+    except (ValueError, TypeError, AttributeError):
+        print(f"{CLR_YELLOW}⚠ Invalid {source} value ({raw!r}); using 1.{CLR_RESET}")
+        return 1
+    if top < 1:
+        print(f"{CLR_YELLOW}⚠ Invalid {source} value ({raw!r}); using 1.{CLR_RESET}")
+        return 1
+    return top
+
+
+def resolve_table_weights(cli_val, configs: dict, strict: bool = False) -> list[tuple[float, float]]:
+    """CLI --table-weights wins, then ::table-weights, else the TG..PP default.
+
+    Returns [(w_tg, w_pp), ...]. With strict=False (default) a parse
+    error warns and falls back to the default; with strict=True the
+    ValueError propagates so callers (e.g. main()) can abort instead.
+    """
+    raw = cli_val if cli_val is not None else configs.get(
+        'table-weights', ranking_mod.DEFAULT_WEIGHTS_SPEC)
+    if raw is True:
+        raw = ranking_mod.DEFAULT_WEIGHTS_SPEC
+    try:
+        return ranking_mod.parse_weights(str(raw))
+    except ValueError as exc:
+        if strict:
+            raise
+        print(f"{CLR_YELLOW}⚠ Invalid weighting spec ({exc}); using default.{CLR_RESET}")
+        return ranking_mod.default_weights()
+
+
+def build_grid_param_map(target_flags: list[str]) -> dict[str, str]:
+    """Map optimizer CLI flags to their llama-bench CSV columns."""
+    return {flag: get_csv_column(flag) for flag in target_flags}
+
+
 def run_bench(cmd: list, csv_file: Path | None, md_file: Path | None) -> None:
     """Run llama-bench, routing stdout to the CSV file and stderr to the MD file.
 
@@ -252,8 +316,11 @@ def parse_bench_output(csv_path: Path, target_flag: str) -> dict:
 
 def parse_grid_output(csv_path: Path, target_flags: list[str]) -> tuple[dict, float]:
     """
-    Parses a grid-search CSV to find the single configuration with the highest TG performance.
-    Returns a dict of {flag: best_value} and the maximum TG t/s achieved.
+    Legacy TG-only grid parser: finds the single configuration with the
+    highest TG performance. Returns ({flag: best_value}, max TG t/s).
+
+    Kept for backwards compatibility (and its tests); grid ranking in
+    main() now uses model/ranking.py (weighted PP+TG) instead.
     """
     best_row = None
     max_tg = -1.0
@@ -333,8 +400,10 @@ def main() -> None:
     parser.add_argument('--model-dir', type=Path, default=Path("../models"), help="Directory containing GGUF models")
     parser.add_argument('-m', '--model', type=Path, help="Direct path to the model file (overrides params file)")
     parser.add_argument('--grid', action='store_true', help="Enable grid search mode (tests all ::optimize combinations simultaneously)")
-    parser.add_argument('--output-dir', type=Path, default=None, help="Directory for result CSV/TXT files (default: current directory, can also be set via ::output-dir)")
+    parser.add_argument('--output-dir', type=Path, default=None, help="Directory for result CSV/MD files (default: current directory, can also be set via ::output-dir)")
     parser.add_argument('--output-format', choices=list(OUTPUT_FORMATS), default=None, help="Benchmark output format: 'both' writes bench_*.csv (for LlamaGraph) + bench_*.md (human-readable), 'csv' or 'md' writes only one (default: both, can also be set via ::output-format)")
+    parser.add_argument('--top', type=int, default=None, help="Grid mode: result rows per TG/PP weighting (default: 1, can also be set via ::top)")
+    parser.add_argument('--table-weights', default=None, help="Grid mode: comma-separated TG/PP weightings, e.g. '1/0,0.7/0.3,0.5/0.5,0.3/0.7,0/1' (default: TG|70/30|50/50|30/70|PP, can also be set via ::table-weights)")
     args, unknown = parser.parse_known_args()
 
     # ==================== Load Configuration ====================
@@ -456,7 +525,7 @@ def main() -> None:
         run_timestamp = int(time.time())
         csv_file = output_dir / f"bench_{model_path.stem}_grid_{run_timestamp}.csv" if out_fmt in ('both', 'csv') else None
         md_file = output_dir / f"bench_{model_path.stem}_grid_{run_timestamp}.md" if out_fmt in ('both', 'md') else None
-        result_txt_path = output_dir / f"opt_results_{model_path.stem}_{run_timestamp}.txt"
+        result_md_path = output_dir / f"opt_results_{model_path.stem}_{run_timestamp}.md"
 
         print_cmd_box(" ".join(cmd))
 
@@ -467,18 +536,46 @@ def main() -> None:
             if e.stderr and e.stderr.strip(): print(f"{CLR_RED}{e.stderr.strip()}{CLR_RESET}")
             sys.exit(1)
             
-        # Parse & Log Grid Results (auto-evaluation needs the CSV variant)
+        # Parse & Log Grid Results (auto-evaluation needs the CSV variant).
+        # Weighted PP/TG ranking over the whole grid dataset: entries are
+        # grouped by parameter combination (best PP + best TG each),
+        # min-max normalized over the dataset, then scored per TG/PP
+        # weighting (see model/ranking.py). Incomplete combinations
+        # (missing PP or TG rows) are skipped.
+        if args.top is not None and args.top < 1:
+            print(f"{CLR_RED}❌ --top must be >= 1.{CLR_RESET}")
+            sys.exit(1)
+        top_n = resolve_top(args.top, configs)
+        try:
+            weights = resolve_table_weights(
+                args.table_weights, configs, strict=True)
+        except ValueError as exc:
+            print(f"{CLR_RED}❌ Invalid --table-weights: {exc}{CLR_RESET}")
+            sys.exit(1)
+        print(f"{CLR_CYAN}Ranking:{CLR_RESET} top={top_n}, "
+              f"weights=[{', '.join(ranking_mod.header_for_weight(w) for w in weights)}] "
+              f"(TG/PP shares, normalized over the grid dataset)")
+
+        result_set = None
         if csv_file is not None:
             meta = extract_metadata(csv_file)
-            best_config, best_tg = parse_grid_output(csv_file, list(optimize_targets.keys()))
+            param_map = build_grid_param_map(list(optimize_targets.keys()))
+            entries = ranking_mod.parse_grid_csv(csv_file, param_map)
+            if not entries:
+                print(f"{CLR_YELLOW}⚠ No complete (pp+tg) configurations found in CSV.{CLR_RESET}")
+            else:
+                result_set = ranking_mod.rank(entries, weights, top_n)
         else:
             print(f"{CLR_YELLOW}⚠ --output-format md: skipping auto-evaluation (needs CSV).{CLR_RESET}")
-            meta, best_config, best_tg = {}, {}, 0.0
-        
-        with open(result_txt_path, 'w', encoding='utf-8') as res_f:
+            meta, result_set = {}, None
+
+        with open(result_md_path, 'w', encoding='utf-8') as res_f:
             res_f.write(f"=== Grid Search Run: {model_path.name} ===\n")
             res_f.write(f"Timestamp: {run_timestamp}\n")
             res_f.write(f"Mode: Grid Search (Combinations: {total_combinations}, Repetitions: {repetitions})\n")
+            res_f.write(f"Ranking: top={top_n}, "
+                        f"weights=[{', '.join(ranking_mod.header_for_weight(w) for w in weights)}] "
+                        f"(TG/PP shares, min-max normalized over this dataset)\n")
             if meta:
                 res_f.write("\n🔍 System & Model Metadata:\n")
                 meta_labels = [
@@ -488,38 +585,45 @@ def main() -> None:
                 max_label_len = max(len(lbl) for lbl, _ in meta_labels)
                 for label, key in meta_labels:
                     res_f.write(f"{label.ljust(max_label_len)} : {meta.get(key, 'N/A')}\n")
-                    
-            res_f.write("\n✅ BEST CONFIGURATION FOUND:\n")
-            for param, value in best_config.items():
-                line = f"{param} = {value}"
-                print(f"  {CLR_GREEN}{line}{CLR_RESET}")
-                res_f.write(f"{line}\n")
-            res_f.write(f"\n📈 Peak TG Performance: {best_tg:.2f} t/s\n")
-            res_f.write("\n📝 Recommended lines for your config:\n")
-            for param, value in best_config.items():
-                line = f"{param} {value}"
-                print(f"  {line}")
-                res_f.write(f"{line}\n")
+
+            if result_set is None:
+                res_f.write("\n⚠ No ranking available (no CSV output or no complete configs).\n")
+            else:
+                table_md = ranking_mod.render_markdown(result_set)
+                res_f.write("\n✅ WEIGHTED RANKING (rows: rank 1..N, "
+                            "sub-rows: par = copy-paste params, pp/tg = t/s, score = weighted norm):\n\n")
+                res_f.write(table_md)
+                res_f.write("\n📝 Recommended lines per weighting (rank 1 each):\n")
+                for header, col in zip(result_set["headers"], result_set["cells"]):
+                    if not col:
+                        continue
+                    line = ranking_mod.format_params(col[0]["params"])
+                    print(f"  {CLR_GREEN}[{header}] {line}{CLR_RESET} "
+                          f"(pp {col[0]['pp']:.2f} / tg {col[0]['tg']:.2f} t/s, "
+                          f"score {col[0]['score']:.4f})")
+                    res_f.write(f"[{header}] {line} "
+                                f"(pp {col[0]['pp']:.2f} / tg {col[0]['tg']:.2f} t/s, "
+                                f"score {col[0]['score']:.4f})\n")
                 
         print(f"\n{CLR_GREEN}Finished! Benchmark files and results log saved to: {output_dir.resolve()}{CLR_RESET}")
         if csv_file is not None:
             print(f"{CLR_CYAN}CSV file: {csv_file}{CLR_RESET}")
         if md_file is not None:
             print(f"{CLR_CYAN}Markdown file: {md_file}{CLR_RESET}")
-        print(f"{CLR_CYAN}Result file: {result_txt_path}{CLR_RESET}")
+        print(f"{CLR_CYAN}Result file: {result_md_path}{CLR_RESET}")
         return
 
     # ==================== Sequential Optimization Mode (Default) ====================
     print(f"{CLR_CYAN}Optimization sequence:{CLR_RESET} {optimize_order}")
     
     run_timestamp = int(time.time())
-    result_txt_path = output_dir / f"opt_results_{model_path.stem}_{run_timestamp}.txt"
+    result_md_path = output_dir / f"opt_results_{model_path.stem}_{run_timestamp}.md"
     first_csv_path = None
     metadata_written = False
     best_config = {}
     current_base_args = base_args.copy()
     
-    with open(result_txt_path, 'w', encoding='utf-8') as res_f:
+    with open(result_md_path, 'w', encoding='utf-8') as res_f:
         res_f.write(f"=== Sequential Optimization Run: {model_path.name} ===\n")
         res_f.write(f"Timestamp: {run_timestamp}\n")
         res_f.write(f"Order: {optimize_order}\n")
@@ -629,7 +733,7 @@ def main() -> None:
             res_f.write(f"{line}\n")
             
     print(f"\n{CLR_GREEN}Finished! Benchmark files and result log saved to: {output_dir.resolve()}{CLR_RESET}")
-    print(f"{CLR_CYAN}Result file: {result_txt_path}{CLR_RESET}")
+    print(f"{CLR_CYAN}Result file: {result_md_path}{CLR_RESET}")
 
 if __name__ == "__main__":
     main()

@@ -215,7 +215,7 @@ __marimo__/
 # Anchored to the repo root, matching the script-directory lookup.
 /llamagraph.config.yml
 
-# LlamaGraph benchmark data (local optimizer runs: bench_*.csv/.md, opt_results_*.txt)
+# LlamaGraph benchmark data (local optimizer runs: bench_*.csv/.md, opt_results_*.md)
 # (*.csv/*.txt above already cover most of it; the rest catches .md artifacts
 # anywhere plus the whole local data/ dir with any future extensions)
 bench_*.md
