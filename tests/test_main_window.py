@@ -254,6 +254,86 @@ class TestKeyBindings:
         quit_app.assert_called_once()
 
 
+class TestViewKeys:
+    """Tests for Blender-style digit shortcuts (MainWindow view_keys)."""
+
+    @staticmethod
+    def _window_with_view_keys(tk_root):
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        cbs = {key: MagicMock() for key in ("0", "1", "3", "5", "7")}
+        mw.set_key_bindings(MagicMock(), MagicMock(), MagicMock(),
+                            view_keys=cbs)
+        return mw, cbs
+
+    def test_registers_digit_and_numpad_bindings(self, tk_root):
+        """Each digit binds the main row and the numpad keysym."""
+        mw, _cbs = self._window_with_view_keys(tk_root)
+        bindings = mw._root.bind()
+        for key in ("0", "1", "3", "5", "7"):
+            # Tk normalizes '<Key-1>' to the bare '1' in the bind list.
+            assert key in bindings
+            assert f'<Key-KP_{key}>' in bindings
+
+    def test_digit_triggers_callback(self, tk_root):
+        """Key-1 fires the matching view callback."""
+        mw, cbs = self._window_with_view_keys(tk_root)
+        mw._root.focus_force()
+        mw._root.update()
+        mw._root.event_generate('<Key-1>', when='tail')
+        mw._root.update()
+        cbs["1"].assert_called_once()
+
+    def test_digit_silent_in_entry(self, tk_root):
+        """Digits typed into the level entry never flip the camera."""
+        import tkinter as tk
+        mw, cbs = self._window_with_view_keys(tk_root)
+        assert isinstance(mw._ent_level, tk.Entry)
+        with patch.object(mw._root, 'focus_get',
+                          return_value=mw._ent_level):
+            assert mw._view_key_allowed() is False
+            mw._root.event_generate('<Key-5>', when='tail')
+            mw._root.update()
+        cbs["5"].assert_not_called()
+
+    def test_digit_silent_in_combobox(self, tk_root):
+        """Digits typed into an axis combobox never flip the camera."""
+        from tkinter import ttk
+        mw, cbs = self._window_with_view_keys(tk_root)
+        mw.update_axis_choices(["a", "b"])
+        assert isinstance(mw._cb_x, ttk.Combobox)
+        with patch.object(mw._root, 'focus_get',
+                          return_value=mw._cb_x):
+            assert mw._view_key_allowed() is False
+            mw._root.event_generate('<Key-7>', when='tail')
+            mw._root.update()
+        cbs["7"].assert_not_called()
+
+    def test_digit_silent_in_file_list(self, tk_root):
+        """Digits typed into the file list never flip the camera."""
+        import tkinter as tk
+        mw, cbs = self._window_with_view_keys(tk_root)
+        assert isinstance(mw.left_sidebar._file_list, tk.Listbox)
+        with patch.object(mw._root, 'focus_get',
+                          return_value=mw.left_sidebar._file_list):
+            assert mw._view_key_allowed() is False
+            mw._root.event_generate('<Key-3>', when='tail')
+            mw._root.update()
+        cbs["3"].assert_not_called()
+
+    def test_ortho_state_and_toggle(self, tk_root):
+        """Ortho checkbox defaults off; set_ortho flips it; proj_type maps."""
+        from view.main_window import MainWindow
+        mw = MainWindow(tk_root)
+        assert mw.ortho is False
+        assert mw.proj_type == "persp"
+        mw.set_ortho(True)
+        assert mw.ortho is True
+        assert mw.proj_type == "ortho"
+        mw.set_ortho(False)
+        assert mw.ortho is False
+
+
 # ── Level controls ────────────────────────────────────────────────────
 
 

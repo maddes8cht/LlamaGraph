@@ -160,6 +160,7 @@ class MockMainWindow:
         self._show_wireframe = 0
         self._show_projections = 0
         self._projection_mode = "none"
+        self._ortho = 0
         self._show_errors_3d = 1
         self._dolly = 1
         self._z_label_mode = "both-norm"
@@ -215,6 +216,17 @@ class MockMainWindow:
     @property
     def show_projections(self) -> bool:
         return self.projection_mode != "none"
+
+    @property
+    def ortho(self) -> bool:
+        return bool(self._ortho)
+
+    @property
+    def proj_type(self) -> str:
+        return "ortho" if self.ortho else "persp"
+
+    def set_ortho(self, enabled: bool) -> None:
+        self._ortho = 1 if enabled else 0
 
     @property
     def show_errors_3d(self) -> bool:
@@ -277,8 +289,10 @@ class MockMainWindow:
     def set_toggle_metric_callback(self, cb):
         self._metric_cb = cb
 
-    def set_key_bindings(self, toggle_metric, refresh, quit_app):
+    def set_key_bindings(self, toggle_metric, refresh, quit_app,
+                         view_keys=None):
         self.last_key_bindings = (toggle_metric, refresh, quit_app)
+        self.last_view_keys = dict(view_keys or {})
 
     def update_axis_choices(self, params: list[str]):
         self.last_axis_choices = list(params)
@@ -2133,3 +2147,103 @@ def test_3d_combined_tg_click_orders_pp_first(tmp_path):
         assert TOOLTIP_SEPARATOR in text
         assert text.startswith("PP\n")
         assert "\nTG\n" in text
+
+
+# ── Blender-style 3-D views (keys 0/1/3/5/7) ─────────────────────────────────
+
+
+class _FakeAx3D:
+    """Minimal 3-D axes stand-in recording view_init calls."""
+
+    def __init__(self):
+        self.views: list[tuple] = []
+
+    def view_init(self, elev=None, azim=None):
+        self.views.append((elev, azim))
+
+
+def test_view_preset_mapping():
+    """VIEW_PRESETS holds Blender-style (elev, azim) axis views."""
+    from presenter.plotter_presenter import VIEW_PRESETS
+    assert VIEW_PRESETS == {"1": (0.0, -90.0),
+                            "3": (0.0, 0.0),
+                            "7": (90.0, -90.0)}
+
+
+def test_view_keys_wired(tmp_path):
+    """Presenter passes all five digit shortcuts to the window."""
+    window = MockMainWindow()
+    PlotterPresenter(window, tmp_path)
+    assert set(window.last_view_keys) == {"1", "3", "7", "5", "0"}
+
+
+def test_preset_view_applies_angles_and_ortho(tmp_path):
+    """Preset rebuilds into ortho (empty model: no draw) and sets angles."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    window._mode_3d = 1
+    ax = _FakeAx3D()
+    presenter._current_3d_ax = ax
+    presenter._preset_view("1")
+    assert window._ortho == 1
+    assert ax.views == [(0.0, -90.0)]
+    assert window.plot_view.redraw_count == 1
+
+
+def test_preset_view_noop_outside_3d(tmp_path):
+    """Preset ignores 2-D mode and missing axes (ortho untouched)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._current_3d_ax = _FakeAx3D()
+    presenter._preset_view("1")  # mode_3d off
+    assert window._ortho == 0
+    window._mode_3d = 1
+    presenter._current_3d_ax = None
+    presenter._preset_view("1")  # no live axes
+    assert window._ortho == 0
+
+
+def test_preset_view_unknown_key(tmp_path):
+    """Unknown preset key is ignored."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    window._mode_3d = 1
+    ax = _FakeAx3D()
+    presenter._current_3d_ax = ax
+    presenter._preset_view("9")
+    assert window._ortho == 0
+    assert ax.views == []
+
+
+def test_toggle_proj_type_flips(tmp_path):
+    """Key 5 flips ortho (2-D mode is a no-op)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter.toggle_proj_type()
+    assert window._ortho == 0
+    window._mode_3d = 1
+    presenter.toggle_proj_type()
+    assert window._ortho == 1
+    assert window.proj_type == "ortho"
+    presenter.toggle_proj_type()
+    assert window._ortho == 0
+    assert window.proj_type == "persp"
+
+
+def test_go_home_view_restores_perspective(tmp_path):
+    """Key 0 leaves ortho mode (empty model: no draw, no crash)."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    window._mode_3d = 1
+    window._ortho = 1
+    presenter.go_home_view()
+    assert window._ortho == 0
+
+
+def test_render_plot_no_data_clears_stale_ax(tmp_path):
+    """Empty-model render drops the previous 3-D axes reference."""
+    window = MockMainWindow()
+    presenter = PlotterPresenter(window, tmp_path)
+    presenter._current_3d_ax = _FakeAx3D()
+    presenter._render_plot()
+    assert presenter._current_3d_ax is None

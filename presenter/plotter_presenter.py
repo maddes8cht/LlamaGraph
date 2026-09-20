@@ -42,6 +42,16 @@ TOOLTIP_BORDER = '#888888'
 TOOLTIP_TTL_MS = 6000
 TOOLTIP_SEPARATOR = "─" * 26
 
+# Blender-style axis-aligned 3-D views: key → (elev, azim) in degrees.
+# "1" looks along Y at the X-Z plane (X right, Z up, like Blender front),
+# "3" looks along X at the Y-Z plane, "7" is top-down onto the X-Y plane
+# (ortho + Colormap reads as a color-coded heightmap).
+VIEW_PRESETS: dict[str, tuple[float, float]] = {
+    "1": (0.0, -90.0),
+    "3": (0.0, 0.0),
+    "7": (90.0, -90.0),
+}
+
 
 class PlotterPresenter:
     """
@@ -152,11 +162,18 @@ class PlotterPresenter:
         # Plot view home-button override
         pv.set_home_callback(self._on_home_3d)
 
-        # Key bindings
+        # Key bindings (digits are Blender-style 3-D views)
         win.set_key_bindings(
             toggle_metric=self.toggle_metric,
             refresh=self.scan_files,
             quit_app=win.root.quit,
+            view_keys={
+                "1": lambda: self._preset_view("1"),
+                "3": lambda: self._preset_view("3"),
+                "7": lambda: self._preset_view("7"),
+                "5": self.toggle_proj_type,
+                "0": self.go_home_view,
+            },
         )
 
     # ── File management ───────────────────────────────────────────────────────
@@ -542,6 +559,54 @@ class PlotterPresenter:
             return True
         return False
 
+    # ── Blender-style 3-D views (keys 0/1/3/5/7) ──────────────────────────────
+
+    def _preset_view(self, key: str) -> None:
+        """
+        Axis-aligned 3-D view with auto-ortho (keys 1/3/7).
+
+        No-op outside 3-D mode or without a live axes. When ortho is
+        not active yet, the plot is rebuilt first (the projection type
+        only applies at axes creation), then the preset angles land on
+        the fresh axes. Never raises.
+        """
+        if not self._win.mode_3d or self._current_3d_ax is None:
+            return
+        try:
+            elev, azim = VIEW_PRESETS[key]
+        except KeyError:
+            return
+        try:
+            if not self._win.ortho:
+                self._win.set_ortho(True)
+                if self._model.has_data():
+                    self._render_plot()
+                if self._current_3d_ax is None:
+                    return
+            self._current_3d_ax.view_init(elev=elev, azim=azim)
+        except Exception as exc:
+            print(f"[Presenter] View preset warning: {exc}")
+            return
+        self._win.plot_view.redraw_idle()
+
+    def toggle_proj_type(self) -> None:
+        """Toggle perspective/parallel projection (key 5). Needs rebuild."""
+        if not self._win.mode_3d:
+            return
+        self._win.set_ortho(not self._win.ortho)
+        if self._model.has_data():
+            self._render_plot()
+
+    def go_home_view(self) -> None:
+        """Home camera with auto-perspective (key 0)."""
+        if not self._win.mode_3d:
+            return
+        if self._win.ortho:
+            self._win.set_ortho(False)
+            if self._model.has_data():
+                self._render_plot()
+        self._on_home_3d()
+
     # ── Core render ───────────────────────────────────────────────────────────
 
     def _render_plot(self) -> None:
@@ -551,6 +616,7 @@ class PlotterPresenter:
         """
         if not self._model.has_data():
             self._win.set_graph_title("")
+            self._current_3d_ax = None  # placeholder owns no axes anymore
             self._win.plot_view.show_placeholder(
                 "📊 Select CSV/MD file(s) with Ctrl+Click to display"
             )
@@ -692,6 +758,7 @@ class PlotterPresenter:
             show_surface=self._win.show_surface,
             show_wireframe=self._win.show_wireframe,
             projection_mode=self._win.projection_mode,
+            proj_type=self._win.proj_type,
             show_errors_3d=self._win.show_errors_3d,
             show_level=self._win.show_level,
             level_val=self._win.level_val,

@@ -23,6 +23,7 @@ from view.plot_view import (
     _set_series_zticks,
     _set_z_label,
     _update_projection_depth,
+    apply_proj_type,
     glue_projections_to_box,
     render_2d,
     render_3d,
@@ -1863,6 +1864,45 @@ class TestProjectionGlue:
         """Unreadable view state fails open (visible)."""
         assert _projection_front(object(), 'y', 'max') is True
         assert _projection_front(object(), 'q', 'max') is True
+
+
+class TestApplyProjType:
+    """Tests for apply_proj_type() — pure stub axes, no 3-D needed."""
+
+    def test_ortho_and_persp(self):
+        """Known modes reach set_proj_type unchanged."""
+
+        class _StubAx:
+            def __init__(self):
+                self.modes: list[str] = []
+
+            def set_proj_type(self, mode):
+                self.modes.append(mode)
+
+        ax = _StubAx()
+        apply_proj_type(ax, "ortho")
+        apply_proj_type(ax, "persp")
+        assert ax.modes == ["ortho", "persp"]
+
+    def test_unknown_falls_back_to_persp(self):
+        """Unknown/empty values fall back to perspective."""
+
+        class _StubAx:
+            def __init__(self):
+                self.modes: list[str] = []
+
+            def set_proj_type(self, mode):
+                self.modes.append(mode)
+
+        ax = _StubAx()
+        apply_proj_type(ax, "fish-eye")
+        apply_proj_type(ax, "")
+        apply_proj_type(ax, None)
+        assert ax.modes == ["persp", "persp", "persp"]
+
+    def test_missing_setter_never_raises(self):
+        """Old matplotlib without set_proj_type keeps working."""
+        apply_proj_type(object(), "ortho")
 
     def test_update_projection_depth_flips_and_settles(self):
         """Rotation flips zorders once; the repeat finds nothing to do."""

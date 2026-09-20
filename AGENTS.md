@@ -55,4 +55,4 @@ Must contain `avg_ts` (or `avg_ns`), `n_prompt`, and `n_gen` in the header. See 
 - `Optional[X]` from `typing` (not `X | None` in function signatures)
 - Dark-mode color constants in `utils/colors.py:12`
 - Per-file hue rotation: `get_variant_color(base, idx, angle_deg=28)`
-- Keyboard shortcuts: `Ctrl+T` toggle metric, `Ctrl+R` refresh, `Esc` quit
+- Keyboard shortcuts: `Ctrl+T` toggle metric, `Ctrl+R` refresh, `Esc` quit, 3-D views `1`/`3`/`7` (auto-ortho), `5` persp/ortho toggle, `0` home (auto-persp)
