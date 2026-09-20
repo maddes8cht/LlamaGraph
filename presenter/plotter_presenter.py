@@ -206,7 +206,7 @@ class PlotterPresenter:
         self._win.set_graph_title("")
         self._win.left_sidebar.update_series_toggles([])
         self._win.plot_view.show_placeholder(
-            "📊 Select CSV/MD file(s) with Ctrl+Click to display"
+            "📊 Select CSV/MD file(s) to display (Ctrl+Click for multi-select)"
         )
 
     def _get_meta(self, path: Path) -> dict:
@@ -465,15 +465,15 @@ class PlotterPresenter:
             dim_values, active_axes, current_filters
         )
 
-    def _get_active_axes(self) -> set[str]:
-        """Return the set of dimension names currently used as plot axes."""
-        axes = set()
+    def _get_active_axes(self) -> list[str]:
+        """Return the plot axis dimensions in X, Y order (Y only in 3-D mode)."""
+        axes: list[str] = []
         x = self._win.axis_x
         y = self._win.axis_y
         if x:
-            axes.add(x)
+            axes.append(x)
         if self._win.mode_3d and y:
-            axes.add(y)
+            axes.append(y)
         return axes
 
     # ── 3-D mode toggle ───────────────────────────────────────────────────────
@@ -618,7 +618,7 @@ class PlotterPresenter:
             self._win.set_graph_title("")
             self._current_3d_ax = None  # placeholder owns no axes anymore
             self._win.plot_view.show_placeholder(
-                "📊 Select CSV/MD file(s) with Ctrl+Click to display"
+                "📊 Select CSV/MD file(s) to display (Ctrl+Click for multi-select)"
             )
             return
 

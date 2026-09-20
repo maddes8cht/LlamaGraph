@@ -321,6 +321,12 @@ class TestViewKeys:
             mw._root.update()
         cbs["3"].assert_not_called()
 
+    def test_file_list_uses_extended_selection(self, tk_root):
+        """Plain click selects one file; Ctrl+Click toggles (EXTENDED)."""
+        import tkinter as tk
+        mw, _ = self._window_with_view_keys(tk_root)
+        assert mw.left_sidebar._file_list.cget("selectmode") == tk.EXTENDED
+
     def test_ortho_state_and_toggle(self, tk_root):
         """Ortho checkbox defaults off; set_ortho flips it; proj_type maps."""
         from view.main_window import MainWindow

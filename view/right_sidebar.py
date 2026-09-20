@@ -3,11 +3,15 @@ view/right_sidebar.py
 
 Right sidebar View component for llamagraph.
 
-Displays filter controls for all dimensions that are NOT currently
-assigned as X or Y (or Z) axes.  For each such dimension the sidebar
-shows:
-  - A labelled section header with the dimension name
-  - A Listbox (multi-select) showing all known values for that dimension
+Displays filter controls for all varying dimensions, grouped with the
+currently plotted axes first ("Plot Axes") followed by a visible
+separator and the remaining dimensions ("Other Dimensions").  For each
+dimension the sidebar shows:
+  - A labelled section header with the dimension name (axis sections
+    carry an "X:" / "Y:" badge showing which plot axis they drive)
+  - A Listbox (extended selection: click selects a single value,
+    Ctrl+Click toggles individual values, Shift+Click selects a range)
+    showing all known values for that dimension
   - Buttons: Select All / Clear for that section
 
 When the user changes a selection the Presenter's filter-change callback
@@ -78,7 +82,7 @@ class RightSidebar(tk.Frame):
         # Placeholder shown when no dims need filtering
         self._placeholder = tk.Label(
             self._inner_frame,
-            text="No extra dimensions\nto filter.",
+            text="No variable dimensions\nto filter.",
             bg=COLORS['bg'], fg='#666666',
             font=('Segoe UI', 9),
             justify='center',
@@ -100,18 +104,27 @@ class RightSidebar(tk.Frame):
     def update_filter_sections(
         self,
         dim_values: dict[str, list],
-        active_axes: set[str],
+        active_axes: set[str] | list[str] | tuple[str, ...],
         current_filters: dict[str, set],
     ) -> None:
         """
-        Rebuild filter sections for all dimensions not in *active_axes*.
+        Rebuild filter sections for all varying dimensions.
+
+        Dimensions currently used as plot axes are shown first under a
+        "Plot Axes" group header (in X, Y order), followed by the
+        remaining dimensions under an "Other Dimensions" group header
+        that acts as a visible separator.  Axis sections stay fully
+        interactive filters: restricting their values narrows the
+        plotted range.  Dimensions with a single value carry no
+        filtering information and are hidden in both groups.
 
         Parameters
         ----------
         dim_values:
             Full {dim_name: sorted_values} from the Model.
         active_axes:
-            Dimension names currently used as X/Y axes — these are excluded.
+            Dimension names currently used as plot axes, in X, Y order
+            (a set is also accepted and then ordered by *dim_values*).
         current_filters:
             The current filter state from the Model.
         """
@@ -120,24 +133,50 @@ class RightSidebar(tk.Frame):
             widget.destroy()
         self._sections.clear()
 
-        # Only show dims with >1 value that are not active axes
-        dims_to_show = [
+        if isinstance(active_axes, (list, tuple)):
+            active_order = [d for d in active_axes if d]
+        else:
+            active_order = [d for d in dim_values if d in active_axes]
+        active_set = set(active_order)
+
+        # Axis dims first (X, Y order), then all other varying dims.
+        axis_dims = [
+            d for d in active_order
+            if d in dim_values and len(dim_values[d]) > 1
+        ]
+        other_dims = [
             d for d, vals in dim_values.items()
-            if d not in active_axes and len(vals) > 1
+            if d not in active_set and len(vals) > 1
         ]
 
-        if not dims_to_show:
+        if not axis_dims and not other_dims:
             tk.Label(
                 self._inner_frame,
-                text="No extra dimensions\nto filter.",
+                text="No variable dimensions\nto filter.",
                 bg=COLORS['bg'], fg='#666666',
                 font=('Segoe UI', 9), justify='center',
             ).pack(expand=True, pady=20)
             return
 
-        for dim in dims_to_show:
-            values = dim_values[dim]
-            self._build_section(dim, values, current_filters.get(dim, set(values)))
+        if axis_dims:
+            self._build_group_header("Plot Axes")
+            for dim in axis_dims:
+                values = dim_values[dim]
+                self._build_section(
+                    dim, values, current_filters.get(dim, set(values)),
+                    axis_label=self._axis_badge(dim, active_order),
+                )
+
+        if other_dims:
+            if axis_dims:
+                self._build_group_separator("Other Dimensions")
+            else:
+                self._build_group_header("Other Dimensions")
+            for dim in other_dims:
+                values = dim_values[dim]
+                self._build_section(
+                    dim, values, current_filters.get(dim, set(values))
+                )
 
     def get_current_filters(self) -> dict[str, set]:
         """Return the current filter state from all section listboxes."""
@@ -158,18 +197,53 @@ class RightSidebar(tk.Frame):
 
     # ── Section builder ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _axis_badge(dim: str, active_order: list[str]) -> Optional[str]:
+        """Return "X" / "Y" for the plot axis *dim* drives, else None."""
+        if not active_order:
+            return None
+        if dim == active_order[0]:
+            return "X"
+        if len(active_order) > 1 and dim == active_order[1]:
+            return "Y"
+        return None
+
+    def _build_group_header(self, title: str) -> None:
+        """Build a group heading (e.g. "Plot Axes")."""
+        tk.Label(
+            self._inner_frame, text=title,
+            bg=COLORS['bg'], fg='#888888',
+            font=('Segoe UI', 9, 'bold'), anchor='w',
+        ).pack(fill=tk.X, padx=8, pady=(8, 0))
+
+    def _build_group_separator(self, title: str) -> None:
+        """Build a visible separator with a group heading."""
+        tk.Frame(self._inner_frame, bg=COLORS['separator'], height=1).pack(
+            fill='x', padx=4, pady=(10, 2)
+        )
+        self._build_group_header(title)
+
     def _build_section(
-        self, dim: str, values: list, selected_values: set
+        self, dim: str, values: list, selected_values: set,
+        axis_label: Optional[str] = None,
     ) -> None:
-        """Build one collapsible filter section for *dim*."""
+        """
+        Build one filter section for *dim*.
+
+        *axis_label* is "X" / "Y" when the dimension drives a plot
+        axis and None otherwise; it is shown as a badge prefix in the
+        section header (e.g. "X: N Batch").
+        """
         section = tk.Frame(self._inner_frame, bg=COLORS['bg'])
         section.pack(fill=tk.X, padx=4, pady=(6, 2))
 
         # Header row
         hdr = tk.Frame(section, bg=COLORS['highlight'])
         hdr.pack(fill=tk.X)
+        title = dim.replace('_', ' ').title()
+        header_text = f"  {axis_label}: {title}" if axis_label else f"  {title}"
         tk.Label(
-            hdr, text=f"  {dim.replace('_', ' ').title()}",
+            hdr, text=header_text,
             bg=COLORS['highlight'], fg=COLORS['fg'],
             font=('Segoe UI', 9, 'bold'), anchor='w',
         ).pack(side=tk.LEFT, padx=4, pady=3)
@@ -207,7 +281,7 @@ class RightSidebar(tk.Frame):
             selectbackground=COLORS['accent'], selectforeground='white',
             activestyle='none', font=('Consolas', 9),
             height=height,
-            selectmode=tk.MULTIPLE, exportselection=0,
+            selectmode=tk.EXTENDED, exportselection=0,
             relief=tk.FLAT,
         )
         lb.pack(fill=tk.X, padx=2, pady=2)

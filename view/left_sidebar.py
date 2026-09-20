@@ -5,7 +5,8 @@ Left sidebar View component for llamagraph.
 
 Displays:
   - Current working directory label
-  - File list (Listbox with multi-select)
+   - File list (Listbox with extended selection: click selects a single
+     file, Ctrl+Click toggles individual files, Shift+Click selects a range)
   - Sort / Refresh buttons
   - Comparison filter ("Only this build" / "Only this model" checkboxes,
     shown once at least one file is selected)
@@ -136,7 +137,7 @@ class LeftSidebar(tk.Frame):
             selectbackground=COLORS['accent'], selectforeground='white',
             activestyle='none', font=('Consolas', 9),
             yscrollcommand=scrollbar.set,
-            selectmode=tk.MULTIPLE, exportselection=0,
+            selectmode=tk.EXTENDED, exportselection=0,
         )
         self._file_list.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self._file_list.yview)

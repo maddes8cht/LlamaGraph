@@ -123,7 +123,7 @@ class PlotView(tk.Frame):
 
         self._placeholder = tk.Label(
             self,
-            text="📊 Select CSV file(s) with Ctrl+Click to display",
+            text="📊 Select CSV file(s) to display (Ctrl+Click for multi-select)",
             bg=COLORS['bg'], fg=COLORS['fg'],
             font=('Segoe UI', 12),
         )
